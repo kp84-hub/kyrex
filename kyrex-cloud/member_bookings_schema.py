@@ -6,7 +6,7 @@ from datetime import date, datetime, time, timedelta
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
-from workout_booking_schema import BRANCH, HOSTS, URL
+from workout_booking_schema import BRANCH, HOSTS, REFRESH_HOST, REFRESH_URL, URL
 
 ACTION = 'member_bookings'
 STUDIO_LABEL = 'Level 6'  # existing supported adapter, selected by an owner request
@@ -17,8 +17,7 @@ MAX_BYTES = 512 * 1024
 
 # Session maintenance observed in the portal's own AuthenticationService.
 # Keep these separate from the working booking adapter's host/wire contract.
-REFRESH_URL = 'https://auth.glofox.com/refresh'
-READER_HOSTS = (*HOSTS, 'auth.glofox.com')
+READER_HOSTS = (*HOSTS, REFRESH_HOST)
 FAILURES = {
     'signed_out': 'The member portal shows you are signed out. Sign in through the Browser Bot private viewer, then close the viewer.',
     'session_unverified': 'The member portal loaded, but its saved session could not be verified. Check it in the Browser Bot private viewer; this is not proof that you are signed out.',

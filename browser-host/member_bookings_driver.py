@@ -6,7 +6,7 @@ from urllib.parse import urlsplit
 
 import member_bookings_schema as schema
 import workout_booking_schema as workout
-from workout_booking_driver import identity, member_session
+from workout_booking_driver import identity, member_session, session_refresh, session_refresh_preflight
 
 
 def confirmed_booking(raw):
@@ -14,28 +14,6 @@ def confirmed_booking(raw):
     return (raw.get('status') == 'BOOKED'
             and ('confirmed' not in raw or raw['confirmed'] is True)
             and ('is_from_waiting_list' not in raw or raw['is_from_waiting_list'] is False))
-
-
-def session_refresh(request):
-    """Permit only native session maintenance, never a generated login/write.
-
-    Endpoint and exact body shape are observed in Glofox's public portal.
-    Tokens remain in the existing page/host and are never read from storage,
-    generated, logged, or returned to Cloud. Redirected requests are refused.
-    """
-    if (request.url != schema.REFRESH_URL or request.method != 'POST'
-            or request.redirected_from is not None):
-        return False
-    try:
-        if not workout.portal_url(request.frame.url):
-            return False
-        body = json.loads(request.post_data or 'null')
-    except (ValueError, AttributeError):
-        return False
-    return (isinstance(body, dict) and set(body) == {'refresh_token'}
-            and isinstance(body['refresh_token'], str)
-            and 0 < len(body['refresh_token']) <= 8192
-            and not any(ord(c) < 32 for c in body['refresh_token']))
 
 
 def run(driver, proto, spec, *, allowlist, expected_request=None, guard_sink=None):
@@ -61,8 +39,8 @@ def run(driver, proto, spec, *, allowlist, expected_request=None, guard_sink=Non
         except ValueError:
             pass
         refresh = session_refresh(req)
-        refresh_preflight = req.url == schema.REFRESH_URL and req.method == 'OPTIONS' and req.redirected_from is None
-        refresh_host = urlsplit(req.url).hostname == 'auth.glofox.com'
+        refresh_preflight = session_refresh_preflight(req)
+        refresh_host = urlsplit(req.url).hostname == workout.REFRESH_HOST
         denied = (not allowed(req.url)
                 or (refresh_host and not (refresh or refresh_preflight))
                 or req.method not in {'GET', 'HEAD', 'OPTIONS'} and not (bootstrap or refresh)

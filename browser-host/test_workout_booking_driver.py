@@ -57,7 +57,7 @@ def browser(tmp_path):
                               headers={'Access-Control-Allow-Origin': '*'}); return
             if req.url == 'https://auth.glofox.com/refresh':
                 state.setdefault('refreshes', []).append(req.method)
-                route.fulfill(status=200, content_type='application/json', body='{}',
+                route.fulfill(status=state.get('refresh_status', 200), content_type='application/json', body='{}',
                               headers={'Access-Control-Allow-Origin': '*'}); return
             if req.method == 'POST':
                 state['posts'].append(json.loads(req.post_data))
@@ -93,7 +93,7 @@ def browser(tmp_path):
                     + json.dumps('Bearer ' + state.get('read_token', state['token'])) + '}}).catch(()=>{})')
             if state['member']:
                 markup += '<button onclick="' + html.escape(read, quote=True) + '">My bookings</button>'
-            if state.get('refresh_on_read') and state['posts']:
+            if state.get('refresh_on_prepare') or (state.get('refresh_on_read') and state['posts']):
                 markup = markup.replace(header, 'Login / Register')
                 markup += '''<script>fetch('https://auth.glofox.com/refresh', {
                   method:'POST', headers:{'Content-Type':'application/json'},
@@ -190,6 +190,27 @@ def browser(tmp_path):
 def initial():
     return {'id': 'a' * 32, 'nonce': 'b' * 64, 'stage': 'prepare', 'url': schema.URL,
             'details': copy.deepcopy(DETAILS), 'steps': []}
+
+
+@pytest.mark.parametrize('outcome', ['renewed', 'blocked', 'rejected'])
+def test_booking_preparation_reuses_the_native_saved_session_refresh(browser, monkeypatch, outcome):
+    live, state, proto = browser
+    state['refresh_on_prepare'] = True
+    state['refresh_status'] = 401 if outcome == 'rejected' else 200
+    allowed = list(schema.HOSTS)
+    if outcome != 'blocked':
+        allowed.append(schema.REFRESH_HOST)
+    original = driver.member_session
+    monkeypatch.setattr(driver, 'member_session', lambda page, allowed: original(page, allowed, timeout_ms=1500))
+    result = driver.run(live, proto, initial(), allowlist=allowed, root=live.session_dir)
+    assert not state['posts']
+    if outcome == 'renewed':
+        assert result['snapshot']['signed_in']
+    elif outcome == 'rejected':
+        assert 'Glofox rejected the saved session' in result['final_response']
+    else:
+        assert 'Allow auth.glofox.com' in result['final_response']
+    assert state.get('refreshes', []) == ([] if outcome == 'blocked' else ['POST'])
 
 
 def review(browser, *, scoped=False):
@@ -473,14 +494,28 @@ def reconciliation_row():
             'time_start': DETAILS['start'], 'duration': 45}
 
 
+def test_uncertain_receipt_can_renew_session_and_verify_without_a_second_write(browser):
+    live, state, proto = browser
+    spec = review(browser)
+    state.update(receipt_mode='unsupported', refresh_on_read=True, read_rows=[reconciliation_row()])
+    result = driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)
+    assert result['outcome'] == 'confirmed' and result['reference'] == 'd' * 24
+    assert state['refreshes'] == ['POST'] and state['reads'] and len(state['posts']) == 1
+    assert not driver.base.claim(live.session_dir, spec['id'])
+
+
 @pytest.mark.parametrize('failure', ['context_closed', 'refresh'])
 def test_fresh_verification_recovers_submit_session_without_a_second_write(browser, monkeypatch, failure):
     live, state, proto = browser
     spec = review(browser)
     state.update(close_after_post=failure == 'context_closed', refresh_on_read=failure == 'refresh',
+                 refresh_status=503 if failure == 'refresh' else 200,
                  receipt_mode='unsupported', read_rows=[reconciliation_row()])
     result = driver.run(live, proto, spec, allowlist=['*'], root=live.session_dir)
     assert result['outcome'] == 'unknown' and len(state['posts']) == 1
+    if failure == 'refresh':
+        assert state['refreshes'] == ['POST'] and not state.get('reads')
+        state['refresh_status'] = 200
     live.reopen_for_read()
     verify = {k: v for k, v in spec.items() if k not in {'expected', 'submit'}}
     verify.update(stage='verify', steps=[])
@@ -491,7 +526,7 @@ def test_fresh_verification_recovers_submit_session_without_a_second_write(brows
     assert result['outcome'] == 'confirmed' and result['reference'] == 'd' * 24
     assert len(state['posts']) == 1 and state['reads']
     assert not driver.base.claim(live.session_dir, spec['id'])
-    if failure == 'refresh': assert state['refreshes'] == ['POST']
+    if failure == 'refresh': assert state['refreshes'] == ['POST', 'POST']
 
 
 @pytest.mark.parametrize('change', ['steps', 'submit', 'expected', 'event', 'request'])

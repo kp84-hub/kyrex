@@ -877,8 +877,23 @@ def test_dictated_studio_correction_accepts_dot_time_and_prepares_exact_class(ri
     assert details['time'] == '08:30'
 
 
-def test_invalid_dictated_time_keeps_date_for_compact_time_reply(rig):
-    result = turn(rig, 'Book me a Level 6 class tomorrow at 8.75 a.m.', 'invalid-clock')[-1]
+@pytest.mark.parametrize('clock', ['8 30 a.m', '8   30 AM', '8 : 30 a m', '8.30 a.m.', '830 AM'])
+def test_dictated_booking_times_prepare_the_exact_class(rig, clock):
+    result = turn(rig, f'Book me a class at level six fitness tomorrow at {clock}', 'dictated-clock')[-1]
+    assert 'Reply **yes**' in result['content'] and rig[1]['posts'] == 0
+    assert rig[1]['calls'][-1]['details']['date'] == DAY
+    assert rig[1]['calls'][-1]['details']['time'] == '08:30'
+
+
+@pytest.mark.parametrize('clock,expected', [('08 AM', '08:00'), ('0830 AM', '08:30'), ('8 30 a.m.', '08:30')])
+def test_date_day_is_not_read_as_part_of_the_clock(clock, expected):
+    now = datetime(2026, 11, 11, tzinfo=ZoneInfo('America/New_York'))
+    assert flow.explicit_details(f'November 12 {clock}', now=now) == {'date': '2026-11-12', 'time': expected}
+
+
+@pytest.mark.parametrize('clock', ['8.75 a.m.', '8 75 a.m.'])
+def test_invalid_dictated_time_keeps_date_for_compact_time_reply(rig, clock):
+    result = turn(rig, f'Book me a Level 6 class tomorrow at {clock}', 'invalid-clock')[-1]
     assert 'valid class time' in result['content'] and not rig[1]['calls']
     conv = chat.get_conversation('alice', rig[0])
     entry = flow.restaurant.latest(conv)['workout_booking']

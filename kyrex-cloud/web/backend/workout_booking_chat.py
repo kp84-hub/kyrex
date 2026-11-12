@@ -20,10 +20,10 @@ CORRECTION = re.compile(r"^(?:no[,!]?\s+|i(?:'m| am|m) asking you\b|i (?:mean|me
 OTHER_REQUEST = re.compile(r'^(?:please\s+)?(?:(?:can|could|would) you\s+)?(?:read|show|review|compare|analy[sz]e|graph|find|search|list|explain|tell me|email|send|delete|what\b|how\b|why\b)', re.I)
 NEGATIVE = re.compile(r"\b(?:don't|do not|never|avoid|stop|not looking to|not asking (?:you )?to)(?:\s+\w+){0,3}\s+(?:book(?:ing)?|reserv(?:e|ing)|sign)\b", re.I)
 QUESTION = re.compile(r'\bhow (?:to|do|can)\b|\b(?:know|explain|learn) how\b', re.I)
-DATE = re.compile(r'\b(?:\d{4}-\d{2}-\d{2}|(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4})?|(?:the )?day after tomorrow|today|tomorrow|(?:next |this )?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b', re.I)
-# Dictation may emit 8.30 a.m. or 830 AM. A malformed clock must not
-# match its minute portion as a separate hour.
-TIME = re.compile(r'(?<![\w.:])(\d{1,2})(?:[:.]?(\d{2}))?\s*([ap])\.?\s*m\b\.?', re.I)
+DATE = re.compile(r'\b(?:\d{4}-\d{2}-\d{2}|(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4}(?!\s*[ap]\.?\s*m\b))?|(?:the )?day after tomorrow|today|tomorrow|(?:next |this )?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b', re.I)
+# Dictation can separate the hour and minutes with a space, punctuation, or
+# nothing at all. Consume both parts before validating the clock.
+TIME = re.compile(r'(?<![\w.:])(\d{1,2})(?:(?:[ \t]*[:.][ \t]*|[ \t]+)?(\d{2}))?\s*([ap])\.?\s*m\b\.?', re.I)
 
 # A disconnected HTTP viewer must not cancel a booking operation. Keep the
 # producer alive, bounded, and owner-scoped; never restart it from a GET.
@@ -310,7 +310,8 @@ def explicit_details(text, old=None, *, now=None):
     old = dict(old or {})
     now = now or datetime.now(ZoneInfo('America/New_York'))
     date_tokens = list(DATE.finditer(text))
-    time_tokens = list(TIME.finditer(text))
+    # The date in "November 12 08 AM" must not become the hour of "12 08 AM".
+    time_tokens = list(TIME.finditer(DATE.sub(';', text)))
     time_issue = None
     if len(time_tokens) > 1:
         time_issue = 'Which one date and time should I use for your Level 6 class?'

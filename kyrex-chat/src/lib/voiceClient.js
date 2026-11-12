@@ -18,8 +18,7 @@ export async function voiceReply(response, onApproval = () => {}) {
         const event = JSON.parse(line.slice(6));
         if (event.type === 'done') {
           if (event.voice_approval === true) onApproval();
-          // This is the server's terminal result. HTTP teardown can happen
-          // while the client prepares the first audio.
+          // Begin preparing audio once the server has sent its terminal result.
           void reader.cancel().catch(() => {});
           return spokenText(event.content);
         }
@@ -184,32 +183,7 @@ export class VoiceClient {
     this.pending = new Float32Array(); this.workerBusy = false;
     this.worker?.postMessage({ type: 'resume' });
   }
-  startWaitFeedback(active) {
-    const updates = [[2500, 'Give me a moment.'], [15000, 'I’m still working on it.']];
-    this.waitTimers = updates.map(([delay, text]) => setTimeout(() => {
-      if (!active()) return;
-      this.stopWaitCue?.();
-      const tone = () => { this.stopWaitCue = this.mic?.tone('waiting'); };
-      const speech = window.speechSynthesis;
-      const voice = speech?.getVoices?.().find(option => option.localService && /^en(?:[-_]|$)/i.test(option.lang));
-      if (!voice || !window.SpeechSynthesisUtterance) { tone(); return; }
-      const cue = new window.SpeechSynthesisUtterance(text);
-      cue.voice = voice;
-      cue.lang = voice.lang;
-      cue.onend = () => { this.stopWaitCue = null; };
-      cue.onerror = tone;
-      this.stopWaitCue = () => { cue.onend = null; cue.onerror = null; speech.cancel(); };
-      speech.speak(cue);
-    }, delay));
-  }
-  stopWaitFeedback() {
-    this.waitTimers?.forEach(timer => clearTimeout(timer));
-    this.waitTimers = null;
-    this.stopWaitCue?.();
-    this.stopWaitCue = null;
-  }
   stopPlayback() {
-    this.stopWaitFeedback();
     const done = this.playbackDone; this.playbackDone = null;
     try { this.player?.stop(); } catch {} this.player = null;
     window.speechSynthesis?.cancel(); done?.();
@@ -290,7 +264,6 @@ export class VoiceClient {
     const audio = wavBlob(this.recording.chunks); this.recording = null; this.state('transcribing');
     let requestId;
     try {
-      this.startWaitFeedback(active);
       const { text } = await (await this.request('transcribe', { body: audio, signal: controller.signal, headers: { 'Content-Type': 'audio/wav' } })).json();
       if (!active()) return;
       const deviceLocation = await locationForMessage(text, null, { signal: controller.signal });
@@ -326,7 +299,6 @@ export class VoiceClient {
           const ready = await prepared;
           if (!active()) return;
           if (ready.error) throw ready.error;
-          if (index === 0) this.stopWaitFeedback();
           await new Promise(resolve => {
             this.playbackDone = resolve;
             this.player = this.mic.context.createBufferSource(); this.player.buffer = ready.audio;
@@ -341,7 +313,6 @@ export class VoiceClient {
         }
       } else {
         if (!window.speechSynthesis) throw new Error('Device speech is unavailable. Choose an AI voice in Connections.');
-        this.stopWaitFeedback();
         await new Promise((resolve, reject) => {
           this.playbackDone = resolve;
           const utterance = new SpeechSynthesisUtterance(reply); utterance.lang = 'en-US';

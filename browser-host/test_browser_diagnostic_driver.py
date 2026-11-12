@@ -177,6 +177,37 @@ def test_delayed_iframe_and_member_session_do_not_report_an_initial_login_link(r
     assert result['diagnostic']['stages']['sign_in'] == 'passed'
 
 
+def test_studio_diagnostic_can_renew_the_same_session_as_booking(real_browser):
+    import workout_booking_schema as workout
+    portal = 'https://app.glofox.com/portal/#/branch/' + workout.BRANCH + '/classes-list-view'
+    posts = []
+
+    def fixture(route):
+        req = route.request
+        if req.url == workout.REFRESH_URL:
+            if req.method == 'POST':
+                posts.append(req.url)
+            route.fulfill(status=200, body='{}', headers={'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': 'POST', 'Access-Control-Allow-Headers': 'content-type'})
+            return
+        if req.url == workout.URL:
+            body = f'<iframe src="{portal}"></iframe>'
+        else:
+            body = '''<body>Loading member session<script>
+              fetch('https://auth.glofox.com/refresh', {method:'POST',
+                headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({refresh_token:'fixture-refresh-only'})})
+              .then(r=>{if(r.ok)document.body.textContent='My bookings';});
+              </script></body>'''
+        route.fulfill(status=200, content_type='text/html', body=body)
+
+    real_browser._context.route('**/*', fixture)
+    result = driver.run(real_browser, operator.FakeProto(), {'url': workout.URL},
+                        allowlist=[*workout.HOSTS, workout.REFRESH_HOST], stages={})
+    assert result['diagnostic']['stages']['sign_in'] == 'passed'
+    assert posts == [workout.REFRESH_URL]
+
+
 @pytest.mark.parametrize('entry', ['https://level6training.com/book-a-class', 'https://level6training.com/'])
 @pytest.mark.parametrize('blocked_auth', [False, True])
 def test_loading_or_blocked_auth_is_not_reported_as_logout(real_browser, monkeypatch, entry, blocked_auth):
