@@ -891,6 +891,45 @@ def test_date_day_is_not_read_as_part_of_the_clock(clock, expected):
     assert flow.explicit_details(f'November 12 {clock}', now=now) == {'date': '2026-11-12', 'time': expected}
 
 
+@pytest.mark.parametrize('text', [
+    'Book me a class today at 8.30 at level 6 a.m.',
+    'Book a class today at 8 30 at Level Six Training AM',
+    'Book a class at Level 6 today at 830 AM',
+])
+def test_dictated_studio_name_cannot_supply_the_hour(rig, monkeypatch, text):
+    class Thursday(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 11, 12, 7, 53, tzinfo=tz)
+
+    monkeypatch.setattr(flow, 'datetime', Thursday)
+    result = turn(rig, text, 'thursday-voice-booking')[-1]
+    assert 'Thursday, November 12, 2026 at 8:30 AM' in result['content']
+    assert rig[1]['calls'][-1]['details']['time'] == '08:30'
+    assert rig[1]['posts'] == 0
+    assert flow.explicit_details('today at Level 6 a.m.') == {'date': '2026-11-12'}
+
+
+def test_owner_correction_after_blocked_booking_stays_in_native_review(rig, monkeypatch):
+    first = 'Book me a Level 6 class today at 6 AM'
+    rig[1]['login_required'] = True
+    assert 'Sign in' in turn(rig, first, 'blocked-booking')[-1]['content']
+    conv = chat.get_conversation('alice', rig[0])
+    prior = flow.restaurant.latest(conv)['workout_booking']
+    assert prior['state'] == 'blocked'
+    for text in ('What are you talking about?', 'I want you to book it at another studio today',
+                 'I do not want you to book it today at 8.30 a.m.'):
+        assert not flow.revises_booking(text, prior)
+    correction = 'What are you talking about? I want you to book it today at 8.30 a.m.'
+    assert not flow.revises_booking(correction, {**prior, 'state': 'unknown'})
+    rig[1]['login_required'] = False
+    monkeypatch.setattr(choice, 'classify', lambda *args: pytest.fail('Native correction reached model routing'))
+    result = turn(rig, correction, 'corrected-booking')[-1]
+    assert 'Reply **yes**' in result['content'] and rig[1]['posts'] == 0
+    assert rig[1]['calls'][-1]['details']['time'] == '08:30'
+    assert booking_store.BookingStore().get('alice', prior['id'])['state'] == 'blocked'
+
+
 @pytest.mark.parametrize('clock', ['8.75 a.m.', '8 75 a.m.'])
 def test_invalid_dictated_time_keeps_date_for_compact_time_reply(rig, clock):
     result = turn(rig, f'Book me a Level 6 class tomorrow at {clock}', 'invalid-clock')[-1]

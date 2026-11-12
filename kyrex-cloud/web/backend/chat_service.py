@@ -66,6 +66,7 @@ from datetime import datetime, timezone
 from itertools import islice
 from pathlib import Path
 from typing import AsyncIterator, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 # ── paths ──────────────────────────────────────────────────────────
 # Resolve the shared data root exactly as the rest of Kyrex Cloud does.
@@ -2689,6 +2690,22 @@ def _bot_roster_lines(user: str) -> list[str]:
     return lines
 
 
+def current_time_context(user: str) -> str:
+    account = account_store.get(user) if account_store.isolated(user) else None
+    zone_name = (account or {}).get('profile', {}).get('timezone') or cal_writer.TIMEZONE
+    try:
+        zone = ZoneInfo(zone_name)
+    except (TypeError, ValueError, ZoneInfoNotFoundError):
+        zone = ZoneInfo(cal_writer.TIMEZONE)
+    now = datetime.now(zone)
+    return (
+        f"Kyrex server clock for this turn: {now:%A, %B %-d, %Y at %-I:%M %p %Z} ({zone.key}). "
+        "Resolve today, tomorrow and the current weekday from this clock. "
+        "Use an explicitly requested timezone or an established venue timezone for its own dates and times. "
+        "Dates in older messages describe those exchanges."
+    )
+
+
 def build_system_context(user: str, mode: str = MODE_ORDINARY) -> str:
     """Render the dynamic Kyrex Chat system context for one turn.
 
@@ -2701,6 +2718,7 @@ def build_system_context(user: str, mode: str = MODE_ORDINARY) -> str:
     """
     parts: list[str] = [
         "You are Kyrex Chat, the conversational assistant product from Kyrex.",
+        current_time_context(user),
         KYREX_PRODUCT_CONTEXT,
         CLARIFICATION_POLICY,
     ]
@@ -2821,6 +2839,7 @@ def build_coordinator_context(owner: str, coordinator_bot: dict) -> str:
 
     return (
         "You are a COORDINATOR Bot (shown in Chat as \"The Overwatcher\"). "
+        f"{current_time_context(owner)}\n\n"
         "This conversation is already Bot-bound with delegation permission. "
         "Use the available tools when the owner requests work; do not claim "
         "that this chat cannot delegate or ask the owner to switch Bots manually. "

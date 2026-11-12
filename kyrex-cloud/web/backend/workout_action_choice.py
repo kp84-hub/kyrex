@@ -55,6 +55,8 @@ def candidate(text, conv):
     if flow.pending(conv):
         return False
     entry = flow.restaurant.latest(conv).get('workout_booking') or {}
+    if flow.revises_booking(booking_text(text), entry):
+        return False  # The owner is updating a known studio booking.
     if entry.get('id') and (entry.get('state') in {'collecting', 'proposed'}
                             or booking_text(text).lower().rstrip('.!') in flow.restaurant.YES | flow.restaurant.NO):
         return False

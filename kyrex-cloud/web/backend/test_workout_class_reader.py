@@ -76,3 +76,17 @@ def test_trainer_read_can_inspect_earlier_today_without_making_it_bookable(rig):
     count = len(state['calls'])
     with pytest.raises(api.GlofoxDataError): workout_class_reader.class_at(start.date().isoformat(), '00:00')
     assert len(state['calls']) == count
+
+
+def test_same_day_booking_rejection_identifies_requested_time_and_studio_clock(rig, monkeypatch):
+    _, state = rig
+
+    class Thursday(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 11, 12, 7, 53, tzinfo=tz)
+
+    monkeypatch.setattr(workout_class_reader, 'datetime', Thursday)
+    with pytest.raises(api.GlofoxDataError, match=r'Thursday, November 12 at 6:00 AM ET.*7:53 AM ET'):
+        workout_class_reader.class_at('2026-11-12', '06:00')
+    assert not state['calls']

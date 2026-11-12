@@ -29,6 +29,7 @@ import queue as _q
 import sys
 import tempfile
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -536,6 +537,31 @@ def test_natural_coordinator_mail_request_keeps_reasoning_path(owner_request, mo
     assert _terminal(frames)['status'] == 'complete'
     assert len(_StubSession.instances) == 1
     assert _StubSession.instances[0].turns[0]
+
+
+def test_reused_overwatcher_uses_fresh_owner_clock_across_local_midnight(monkeypatch):
+    _StubSession.instances.clear()
+    _bot('chief', owner='alice', policy=chat_service.serve.COORDINATOR_PRESET)
+    conv = chat_service.create_conversation('alice', bot_id='chief')
+    monkeypatch.setattr(chat_service, 'EngineSession', _StubSession)
+    clock = [datetime(2026, 11, 12, 4, 59, tzinfo=timezone.utc)]
+
+    class FixedClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock[0].astimezone(tz)
+
+    monkeypatch.setattr(chat_service, 'datetime', FixedClock)
+    for hour, minute in ((4, 59), (12, 53)):
+        clock[0] = clock[0].replace(hour=hour, minute=minute)
+        frames = asyncio.run(_frames(chat_service.stream_chat(
+            'alice', conv['conversation_id'], 'What day is it?', voice_reply=True)))
+        assert _terminal(frames)['status'] == 'complete'
+    assert len(_StubSession.instances) == 1
+    first, second = _StubSession.instances[0].turns
+    assert 'Wednesday, November 11, 2026 at 11:59 PM EST' in first
+    assert 'Thursday, November 12, 2026 at 7:53 AM EST' in second
+    assert 'Wednesday, November 11' not in second
 
 
 @pytest.mark.parametrize('coordinator', [True, False])
