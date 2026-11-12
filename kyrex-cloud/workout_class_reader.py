@@ -12,7 +12,11 @@ def class_at(day: str, clock: str, *, for_booking=True) -> dict:
     start = datetime.fromisoformat(day + 'T' + clock).replace(tzinfo=api.BRANCH_TZ)
     now = datetime.now(api.BRANCH_TZ)
     if for_booking:
-        if not now < start <= now + timedelta(days=14):
+        if start <= now:
+            raise api.GlofoxDataError(
+                f"The Level 6 class time you requested was {start:%A, %B %-d at %-I:%M %p} ET. "
+                f"It’s now {now:%A, %B %-d at %-I:%M %p} ET. Choose a future class. Nothing was booked.")
+        if start > now + timedelta(days=14):
             raise api.GlofoxDataError('Choose a future Level 6 class within the next 14 days.')
     elif not now.date() <= start.date() <= (now + timedelta(days=14)).date():
         raise api.GlofoxDataError('Choose a Level 6 class from today through the next 14 days.')
