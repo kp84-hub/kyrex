@@ -630,6 +630,38 @@ def test_old_delegation_frames_cannot_turn_an_empty_model_answer_into_success(mo
     assert [m['role'] for m in saved['messages']] == ['user']
 
 
+@pytest.mark.parametrize('status', ['queued', 'done', 'failed'])
+def test_empty_coordinator_reply_reports_this_turns_email_status(monkeypatch, status):
+    _bot('chief', owner='alice', policy=chat_service.serve.COORDINATOR_PRESET)
+    conv = chat_service.create_conversation('alice', bot_id='chief')
+    cid = conv['conversation_id']
+    store = chat_service._task_store()
+
+    class EmptyEngine(_StubSession):
+        def run_turn(self, text, on_token, cancel_check=None):
+            did = store.create_delegation(owner='alice', coordinator_bot_id='chief',
+                target_bot_id='mail', parent_conversation_id=cid, parent_task_id='turn-email-user',
+                executor_prefix='gmail', task_text='gmail: read launch', status='queued')
+            tid = store.submit('mail', 'gmail: read launch', executor_prefix='gmail', bot_id='mail',
+                rift='', chat_id='alice', conversation_id=cid, parent_delegation_id=did)
+            store.set_delegation_status(did, 'queued', task_id=tid)
+            if status == 'done':
+                store.complete(tid, {'status': 'no_changes', 'count': 0,
+                    'mode': 'read_query', 'query': 'launch', 'message_ids': [],
+                    'final_response': 'No matching email.'})
+            elif status == 'failed':
+                store.set_status(tid, 'failed', error='The selected inbox needs to be reconnected.')
+            return '', None
+
+    monkeypatch.setattr(chat_service, 'EngineSession', EmptyEngine)
+    frames = asyncio.run(_frames(chat_service.stream_chat(
+        'alice', cid, 'Check my email about the launch', request_id='email')))
+    expected = {'queued': 'still running', 'done': 'without a match', 'failed': 'needs to be reconnected'}
+    assert _terminal(frames)['status'] == 'complete'
+    assert expected[status] in _terminal(frames)['content']
+    assert expected[status] in chat_service.get_conversation('alice', cid)['messages'][-1]['content']
+
+
 @pytest.mark.parametrize('bot_id, previous, answer, followup', [
     ('mail-helper', 'Search my email for the invoice', 'Native email result', 'Try again'),
     ('calendar-helper', 'Show my calendar for Friday', 'Native calendar result', 'What about tomorrow?'),

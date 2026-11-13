@@ -231,7 +231,7 @@ def _auto_send(bot_id, *, approve=True):
     return send, sent
 
 
-def _run(rig, text, *, cid=None, send=None, bot_id=BOT):
+def _run(rig, text, *, cid=None, send=None, bot_id=BOT, request_id=None):
     worker = TaskWorker(rig["raw"], worker_id="ec-" + uuid.uuid4().hex[:6],
                         idle_sleep=0.01, heartbeat_interval=0.01, send=send)
     worker.start()
@@ -239,7 +239,7 @@ def _run(rig, text, *, cid=None, send=None, bot_id=BOT):
         if cid is None:
             cid = chat_service.create_conversation(
                 OWNER, bot_id=bot_id)["conversation_id"]
-        frames = asyncio.run(_frames(chat_service.stream_chat(OWNER, cid, text)))
+        frames = asyncio.run(_frames(chat_service.stream_chat(OWNER, cid, text, request_id=request_id)))
     finally:
         worker.stop()
     return frames, cid
@@ -354,6 +354,61 @@ def test_handoff_denied_at_gate_creates_nothing(rig):
     send, _ = _auto_send(BOT, approve=False)
     _run(rig, "add that to my calendar", cid=cid, send=send)
     assert rig["fake"]._writer.events == []
+
+
+@pytest.mark.parametrize("wording,query", [
+    ("Look for an email from Casey and add the launch to my calendar", "from:Casey launch"),
+    ("Find the email from Casey about the launch, then put it on my calendar", 'from:Casey "the launch"'),
+])
+def test_combined_request_reads_one_email_and_reviews_one_event_even_on_retry(rig, wording, query):
+    _mail_bot(rig["tmp"], policy=serve.COORDINATOR_PRESET)
+    message = _read_message("m1", subject="Launch", sender="Casey <casey@example.org>",
+        date="Fri, 13 Nov 2026 12:00:00 +0000",
+        body="The launch is on December 4, 2026 from 2:00 pm to 3:00 pm.\nLocation: Main Hall")
+    rig["fake"]._gmail = _FakeGmailRead(hits=[{"id": "m1"}], reads={"m1": message})
+    send, notices = _auto_send(BOT)
+    first, cid = _run(rig, wording, send=send, request_id="first")
+    assert "Created" in _terminal(first)["content"]
+    assert [row["executor_prefix"] for row in rig["store"].submissions] == ["gmail", "email_calendar"]
+    assert rig["fake"]._gmail.searches[0]["query"] == query
+    assert len(rig["fake"]._writer.events) == 1
+    assert rig["fake"]._writer.events[0]["start"]["dateTime"] == "2026-12-04T14:00:00"
+    assert any("T1:" in notice["text"] for notice in notices)
+    second, _ = _run(rig, wording, cid=cid, send=send, request_id="second")
+    assert "Created" in _terminal(second)["content"]
+    assert len(rig["fake"]._writer.events) == 1
+    assert sum("T1:" in notice["text"] for notice in notices) == 1
+
+
+@pytest.mark.parametrize("outcome", [
+    "missing", "multiple", "unrelated", "unavailable", "partial_time", "ambiguous",
+    "unrelated_pronoun", "truncated", "foreign_timezone",
+])
+def test_combined_request_explains_why_no_calendar_review_was_created(rig, outcome):
+    _mail_bot(rig["tmp"], policy=serve.COORDINATOR_PRESET)
+    body = {"partial_time": "Launch is on December 4, 2026 at 2:00 pm.",
+            "foreign_timezone": "Launch on December 4, 2026 from 2:00 pm to 3:00 pm Pacific Time.",
+            "ambiguous": "Launch on December 4, 2026.\n\nLaunch on December 8, 2026."}.get(outcome, _BODY)
+    message = _read_message("m1", subject="Unrelated event", sender="Casey",
+        date="Fri, 13 Nov 2026 12:00:00 +0000", body=body, truncated=outcome == "truncated")
+    ids = {"missing": [], "multiple": ["m1", "m2"], "unavailable": []}.get(outcome, ["m1"])
+    rig["fake"]._gmail = _FakeGmailRead(hits=[{"id": mid} for mid in ids],
+        messages={mid: message for mid in ids}, reads={"m1": message},
+        error=connectors.ConnectorUnavailable("Fixture inbox expired") if outcome == "unavailable" else None)
+    wording = ("Find the email from Casey about the launch, then put it on my calendar"
+               if outcome == "unrelated_pronoun"
+               else "Look for an email from Casey and add the launch to my calendar")
+    frames, _ = _run(rig, wording)
+    terminal = _terminal(frames)
+    assert terminal["status"] == "complete"
+    expected = {"missing": "couldn’t find a matching email", "multiple": "more than one matching email",
+                "unrelated": "couldn’t verify", "unavailable": "read unavailable",
+                "partial_time": "full time range", "ambiguous": "multiple dates",
+                "unrelated_pronoun": "couldn’t verify", "truncated": "only read part",
+                "foreign_timezone": "different timezone"}
+    assert expected[outcome] in terminal["content"]
+    assert [row["executor_prefix"] for row in rig["store"].submissions] == ["gmail"]
+    assert not rig["fake"]._writer.events
 
 
 # ═════════════════════════════════════════════════════════════════════════

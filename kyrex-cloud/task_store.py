@@ -516,7 +516,7 @@ class CloudTaskStore:
         # automatically replay failed/uncertain writes or change destinations
         # on retry; viewers reattach to the original task and its real outcome.
         calendar_replay = False
-        if not task_id and executor_prefix == 'cal_write':
+        if not task_id and executor_prefix in {'cal_write', 'email_calendar'}:
             task_id = calendar_create_task_id(chat_id, conversation_id, task_text)
             calendar_replay = bool(task_id)
         task_id = task_id or _new_task_id()
@@ -598,7 +598,7 @@ class CloudTaskStore:
         import cal_writer
         rows = self._conn.execute(
             "SELECT * FROM tasks WHERE chat_id=? AND conversation_id=? "
-            "AND executor_prefix='cal_write' ORDER BY created_at DESC, rowid DESC",
+            "AND executor_prefix IN ('cal_write','email_calendar') ORDER BY created_at DESC, rowid DESC",
             (owner, conversation_id)).fetchall()
         for row in rows:
             task = self._row_to_task(row)

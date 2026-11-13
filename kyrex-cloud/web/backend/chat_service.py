@@ -3446,8 +3446,6 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
     authoritative row, exactly like the provider/engine paths produce their
     terminal ``status`` frame.
     """
-    from task_store import CloudTaskStore
-    import flux as flux_module
     store = _task_store()
     try:
         from job_contracts import JobContractError, validate_request_route
@@ -3568,6 +3566,17 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
                 conversation_id=conversation_id)
     except (dev_bot.DevBotError, JobContractError) as exc:
         raise ChatUnavailable(str(exc))
+    async with contextlib.aclosing(_stream_existing_bot_task(
+            user, conv, store, task_id, cancel_event, mode=mode,
+            conversation_id=conversation_id)) as frames:
+        async for frame in frames:
+            yield frame
+
+
+async def _stream_existing_bot_task(user, conv, store, task_id, cancel_event, *, mode=None, conversation_id=None):
+    """Observe an accepted task without resubmitting it."""
+    import flux as flux_module
+    conversation_id = conversation_id or conv['conversation_id']
     # The result's message identity is the durable task id — already
     # unique per turn and well known to the store, so a repeated viewer or a
     # re-driven turn can never append the same result text twice. (Computed
@@ -3578,7 +3587,6 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
 
     yield {"type": "conversation", "conversation_id": conversation_id}
 
-    loop = asyncio.get_running_loop()
     q = _queue.Queue()
     sentinel = object()
     final_result = None
@@ -4158,6 +4166,37 @@ def _consume_coordinator_results(user, conversation_id, session, conv, turn_anch
                                 and m.get("created_at", "") >= cutoff)]
 
 
+def _unfinished_coordinator_email(user, conversation_id, bot_id, turn_id):
+    """Recover visible status from this turn's accepted email work only."""
+    store = _task_store()
+    try:
+        records = store.list_delegations(owner=user, coordinator_bot_id=bot_id,
+            parent_conversation_id=conversation_id, parent_task_id=turn_id, limit=25)
+    except Exception:
+        return ''
+    mail = next((row for row in records if row.get('executor_prefix') == 'gmail'), None)
+    if not mail or any(row.get('executor_prefix') != 'gmail' for row in records):
+        return ''
+    task = store.get(mail.get('task_id')) or {}
+    if (task.get('chat_id'), task.get('conversation_id'), task.get('bot_id'),
+            task.get('executor_prefix'), task.get('parent_delegation_id')) != (
+            user, conversation_id, mail['target_bot_id'], 'gmail', mail['delegation_id']):
+        return ''
+    if task['status'] in {'queued', 'running'}:
+        return 'The email lookup is still running. You can follow it in Email activity.'
+    result = task.get('result')
+    if task['status'] == 'failed' or (isinstance(result, dict) and result.get('outcome') in {'unavailable', 'failed'}):
+        return 'The email lookup failed. ' + _task_failure_detail(task, result)
+    if task['status'] == 'done' and isinstance(result, dict):
+        if result.get('count') == 0:
+            return 'The email lookup finished without a match in your selected inboxes.'
+        if result.get('selected'):
+            return 'I opened a matching email. The result is in Email activity.'
+        if result.get('message_ids'):
+            return 'I found matching emails. Open Email activity and choose the message you want to read.'
+    return ''
+
+
 def sync_delegated_work(user: str, conversation_id: str) -> dict:
     """Owner-scoped sync of a conversation's delegated work.
 
@@ -4626,6 +4665,15 @@ async def stream_chat(
         async for frame in chat_maps.stream_route(sys.modules[__name__], user, conv, user_content,
                 maps_arguments, turn_location, request_id, cancel_event, workspace_id):
             yield frame
+        return
+    import email_calendar_chat
+    mail_event = email_calendar_chat.request(user_content) if not fitness_read_only and selected_bot else None
+    if mail_event:
+        async with contextlib.aclosing(email_calendar_chat.stream(
+                sys.modules[__name__], user, conv, user_content, mail_event,
+                turn_user_identity, turn_assistant_identity, cancel_event, workspace_id)) as frames:
+            async for frame in frames:
+                yield frame
         return
     import workout_cancellation_chat
     if not fitness_read_only and workout_cancellation_chat.candidate(user_content, conv):
@@ -6332,6 +6380,10 @@ async def stream_chat(
                 final_text = view['detail']
             except Exception:
                 final_text = 'Email review is unavailable. No email was approved or sent by this chat request.'
+        recovered_email = False
+        if outcome is _SENTINEL and not final_text and coordinator_ctx is not None:
+            final_text = _unfinished_coordinator_email(user, conversation_id, bot_binding, turn_anchor['id'])
+            recovered_email = bool(final_text)
 
         # Persistence: only a successfully-completed turn persists an assistant
         # message. Failed and cancelled streams are never recorded as a completed
@@ -6340,7 +6392,7 @@ async def stream_chat(
             # Finalization is idempotent under the turn identity: a repeated
             # final event / retried turn cannot append the answer twice.
             conv_now = get_conversation(user, conversation_id) or conv
-            if coordinator_ctx is not None and engine_session is not None:
+            if coordinator_ctx is not None and engine_session is not None and not recovered_email:
                 _consume_coordinator_results(user, conversation_id, engine_session,
                                              conv_now, turn_anchor)
             assistant = _append_message(user, conv_now, "assistant", final_text,
