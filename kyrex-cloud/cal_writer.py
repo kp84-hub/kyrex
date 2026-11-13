@@ -40,6 +40,13 @@ _EXPLICIT_REQUEST_DATE = (r"(?:\d{4}-\d{2}-\d{2}|(?:"
                  + r")[.]?\s+\d{1,2}(?:st|nd|rd|th)?(?:(?:,\s*|\s+)\d{4})?)")
 _REQUEST_DATE = (r"(?:(?:" + _WEEKDAY + r"(?:,\s*|\s+))?"
                  + _EXPLICIT_REQUEST_DATE + r"|today|tomorrow|(?:next\s+)?" + _WEEKDAY + r")")
+_CLOCK = r"\d{1,2}(?:[:.]\d{2}|\d{2}(?=\s*[ap]))?\s*(?:[ap]\.?\s*m\.?)?"
+_DURATION = r"(?:for\s+)?(?P<amount>\d+)\s*(?P<unit>minutes?|mins?|hours?|hrs?)"
+_DURATION_REPLY = re.compile(
+    r"(?:(?:" + _DURATION + r")(?:[,\s]+from\s+(?P<start>" + _CLOCK + r")\s+to\s+(?P<end>" + _CLOCK + r"))?"
+    r"|(?:until|to|ends?\s+at)\s+(?P<until>" + _CLOCK + r"))[.!]?", re.I)
+_CREATE_OPENER = re.compile(r"(?:add|create)\s+an?\s+(?:new\s+)?(?:calendar\s+)?event"
+                            r"(?:\s+(?:to|on|in)\s+(?:my|the)\s+calendar)?[.!]?", re.I)
 _ALLDAY_REQUEST_RE = re.compile(
     r"^\s*(?:create|add|schedule|book)\s+(?:an?\s+)?all[\s-]*day\s+"
     r"(?P<title>.+?)(?:\s+event)?\s+on\s+(?P<date>" + _REQUEST_DATE + r")[.]?\s*$",
@@ -49,10 +56,10 @@ _INTENT_RE = re.compile(
     r"^\s*(?:create|add|schedule|book)\s+(?P<title>.+?)\s+on\s+"
     r"(?P<date>" + _REQUEST_DATE + r")\s+"
     r"(?:"
-    r"from\s+(?P<start>\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+"
-    r"to\s+(?P<end>\d{1,2}(?::\d{2})?\s*(?:am|pm)?)"
+    r"from\s+(?P<start>" + _CLOCK + r")\s+"
+    r"to\s+(?P<end>" + _CLOCK + r")"
     r"|"
-    r"at\s+(?P<start2>\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+"
+    r"at\s+(?P<start2>" + _CLOCK + r")\s+"
     r"for\s+(?P<dur>\d+)\s*(?P<unit>minutes?|mins?|hours?|hrs?)"
     r"|"
     r"(?P<allday>all[\s-]*day)"
@@ -91,7 +98,8 @@ class CalendarWriterError(Exception):
 
 def _parse_time(token: str) -> str:
     raw = str(token or "").strip().lower().replace(" ", "")
-    m = re.fullmatch(r"(\d{1,2})(?::(\d{2}))?(am|pm)?", raw)
+    raw = re.sub(r"([ap])\.?m\.?$", r"\1m", raw)
+    m = re.fullmatch(r"(\d{1,2})(?:[:.]?(\d{2}))?(am|pm)?", raw)
     if not m:
         raise CalendarWriterError(
             f"unrecognised time {token!r} — use HH:MM or e.g. 3pm")
@@ -105,6 +113,18 @@ def _parse_time(token: str) -> str:
     if not 0 <= hour <= 23 or not 0 <= minute <= 59:
         raise CalendarWriterError(f"time out of range: {token!r}")
     return f"{hour:02d}:{minute:02d}"
+
+
+def _parse_range(start, end):
+    start_hm, end_hm = _parse_time(start), _parse_time(end)
+    # In "6 to 8 PM", the trailing period applies to the bare hour when
+    # that produces a same-period, forward range. Explicit clocks stay exact.
+    period = re.search(r"([ap])\.?\s*m\.?\s*$", end, re.I)
+    if period and re.fullmatch(r"(?:[1-9]|1[0-2])", start.strip()):
+        same_period = _parse_time(start.strip() + period[1] + "m")
+        if same_period < end_hm:
+            start_hm = same_period
+    return start_hm, end_hm
 
 
 def _valid_date(value: str) -> str:
@@ -199,6 +219,35 @@ def create_candidate(text):
     return True
 
 
+def spoken_create_text(text, draft):
+    """Interpret a dictated fragment only in an existing create draft."""
+    raw = request_text(text)
+    if re.fullmatch(r"i (?:had|add) an event to my calendar[.!]?", raw, re.I):
+        return "Add an event to my calendar"
+    explicit = create_shaped(raw)
+    if not draft and not explicit:
+        return text
+    year = datetime.now(ZoneInfo(TIMEZONE)).year
+    normal = re.sub(r"\bon\s+(\d{1,2})[./](\d{1,2})(?=\s|[.!]?\s*$)",
+                    lambda m: f"on {year:04d}-{int(m[1]):02d}-{int(m[2]):02d}", raw, flags=re.I)
+    if create_reply(normal, draft):
+        return normal if normal != raw else text
+    if explicit and normal == raw:
+        return text
+    candidate = normal if explicit else "Add " + re.sub(r"^(?:at|and)\s+", "", normal, count=1, flags=re.I)
+    try:
+        title = parse_create_request(candidate)["title"]
+    except CalendarClarification as exc:
+        if not exc.draft.get("date") or not exc.draft.get("time"):
+            return text
+        title = exc.draft["title"]
+    except CalendarWriterError:
+        return text
+    if explicit or draft.get("missing") == "title" or title.casefold() == str(draft.get("title", "")).casefold():
+        return candidate
+    return text
+
+
 def _natural_timed_request(raw, *, now=None):
     """Accept one complete date/range in common orders, retaining event details.
 
@@ -206,7 +255,7 @@ def _natural_timed_request(raw, *, now=None):
     the entire owner request; extra dates, guests or recurrence cannot become
     a second effect or disappear while extracting the first appointment.
     """
-    clock = r"\d{1,2}(?::\d{2})?\s*(?:am|pm)?"
+    clock = _CLOCK
     span = r"(?:at|from)\s+(?P<start>" + clock + r")\s+(?:to|[–-])\s+(?P<end>" + clock + r")"
     day = r"(?P<date>" + _REQUEST_DATE + r")"
     verb = r"(?:create|add|schedule|book)\s+"
@@ -247,7 +296,7 @@ def _natural_timed_request(raw, *, now=None):
     if re.search(r"\b(?:invite|attendees?|every|recurr(?:ing|ence)|location|description)\b", facts, re.I) or extra_date:
         raise CalendarWriterError("Use one event and one date. Guests and recurrence are not supported for creation.")
     intent = build_intent(title, _request_date(match["date"], now),
-                          _parse_time(match["start"]), _parse_time(match["end"]), all_day=False)
+                          *_parse_range(match["start"], match["end"]), all_day=False)
     return validate_intent({**intent, **metadata})
 
 
@@ -280,30 +329,48 @@ def create_reply(text, draft):
     missing = draft.get("missing", "duration")
     patterns = {
         "date":r"(?:on\s+)?" + _REQUEST_DATE,
-        "time":r"(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?|all[ -]*day",
-        "duration":r"(?:for\s+)?\d+\s*(?:minutes?|mins?|hours?|hrs?)",
+        "time":r"(?:at\s+)?" + _CLOCK + r"|all[ -]*day",
     }
+    if missing == "duration":
+        return bool(_DURATION_REPLY.fullmatch(str(text or "").strip()))
     return bool(re.fullmatch(patterns.get(missing, r"(?!)") + r"[.!]?", str(text or "").strip(), re.I))
 
 
 def _finish_create_draft(draft):
-    title = draft.get("title") or "this event"
-    if not draft.get("date"):
+    title = draft.get("title")
+    if not title:
+        missing = "title"
+        date_known = bool(draft.get("date"))
+        time_known = bool(draft.get("time") or draft.get("all_day"))
+        question = {
+            (False, False): "What’s the event title, date, and start time?",
+            (False, True): "What’s the event title and date?",
+            (True, False): "What’s the event title and start time?",
+            (True, True): "What’s the event title?",
+        }[date_known, time_known]
+    elif not draft.get("date"):
         missing, question = "date", f"What date should I use for “{title}”?"
     elif not draft.get("time") and not draft.get("all_day"):
         missing, question = "time", f"What time should “{title}” start, or is it all day?"
-    elif not draft.get("duration") and not draft.get("all_day"):
+    elif not (draft.get("duration") or draft.get("end_time") or draft.get("all_day")):
         missing, question = "duration", f"How long should “{title}” last?"
     else:
+        details = {key: draft[key] for key in DETAIL_LIMITS if key in draft}
         if draft.get("all_day"):
-            return build_intent(title, draft["date"], None, None, all_day=True)
-        minutes = draft["duration"]
-        if minutes <= 0:
-            raise CalendarWriterError("The duration must be positive")
+            return validate_intent({**build_intent(title, draft["date"], None, None, all_day=True), **details})
+        minutes = draft.get("duration")
         start = datetime.strptime(f"{draft['date']} {draft['time']}", "%Y-%m-%d %H:%M")
-        end = start + timedelta(minutes=minutes)
+        if draft.get("end_time"):
+            end = datetime.strptime(f"{draft['date']} {draft['end_time']}", "%Y-%m-%d %H:%M")
+            if end <= start or (minutes is not None and end - start != timedelta(minutes=minutes)):
+                clean = {k: v for k, v in draft.items() if k not in {"end_time", "duration"}}
+                raise CalendarClarification("What end time should I use for the saved start?", {**clean, "missing": "duration"})
+        else:
+            if minutes <= 0:
+                raise CalendarWriterError("The duration must be positive")
+            end = start + timedelta(minutes=minutes)
         return validate_intent({"title":title,"start":start.strftime("%Y-%m-%dT%H:%M:00"),
-                                "end":end.strftime("%Y-%m-%dT%H:%M:00"),"all_day":False})
+                                "end":end.strftime("%Y-%m-%dT%H:%M:00"),"all_day":False, **details})
     raise CalendarClarification(question, {**draft,"missing":missing})
 
 
@@ -319,10 +386,28 @@ def complete_create_draft(text, pending, *, now=None):
         else:
             draft["time"] = _parse_time(re.sub(r"^at\s+", "", raw, flags=re.I))
     else:
-        duration = re.fullmatch(r"(?:for\s+)?(\d+)\s*(minutes?|mins?|hours?|hrs?)", raw, re.I)
+        duration = _DURATION_REPLY.fullmatch(raw)
         if not duration:
             raise CalendarClarification("How long should this appointment last?", draft)
-        draft["duration"] = int(duration[1]) * (60 if duration[2].lower().startswith("h") else 1)
+        amount = duration["amount"]
+        minutes = int(amount) * (60 if duration["unit"].lower().startswith("h") else 1) if amount else None
+        end = duration["end"] or duration["until"]
+        if end:
+            start = duration["start"]
+            saved = datetime.strptime(draft["time"], "%H:%M")
+            if start:
+                parsed = datetime.strptime(_parse_time(start), "%H:%M")
+                if (parsed != saved and not (not re.search(r"[ap]", start, re.I)
+                                             and parsed.hour <= 12
+                                             and parsed.hour % 12 == saved.hour % 12
+                                             and parsed.minute == saved.minute)):
+                    raise CalendarClarification("The range starts at a different time. What end time should I use for the saved start?", draft)
+            finish = datetime.strptime(_parse_time(end), "%H:%M")
+            actual = int((finish - saved).total_seconds() / 60)
+            if actual <= 0 or (minutes is not None and actual != minutes):
+                raise CalendarClarification("The duration and time range disagree. What end time should I use?", draft)
+            minutes = actual
+        draft["duration"] = minutes
     return _finish_create_draft(draft)
 
 
@@ -447,6 +532,8 @@ def parse_create_request(text: str, *, now=None, pending=None, previous_answer=N
     if pending:
         return complete_create_draft(raw, pending, now=now)
     raw = request_text(raw)
+    if _CREATE_OPENER.fullmatch(raw):
+        return _finish_create_draft({})
     if _REMINDER_REFERENCE_RE.fullmatch(raw) or _CALENDAR_AND_PURCHASE_QUESTION_RE.fullmatch(raw):
         reminder = _reminder_draft(previous_answer, now)
         if reminder is not None:
@@ -472,6 +559,14 @@ def parse_create_request(text: str, *, now=None, pending=None, previous_answer=N
         r"(?=\s+(?:for|to)\b|[.!]?\s*$)",
         r"\1", raw, flags=re.I)
     raw = re.sub(r"\s+to (?:the|my) calendar\s+for\s+", " on ", raw, flags=re.I)
+    no_end = re.search(r"\s+(?:with\s+)?no end time[.!]?\s*$", raw, re.I)
+    if no_end:
+        # Preserve the title/date/start as a draft, while declining a
+        # contradictory request that also supplies an explicit range.
+        parse_create_request(raw[:no_end.start()], now=now)
+        raise CalendarWriterError("You gave an end time and also said no end time. Which should I use?")
+    raw = re.sub(r"^((?:add|create|schedule|book)\s+.+?)\s+at\s+(" + _CLOCK + r")\s+on\s+("
+                 + _REQUEST_DATE + r")(?=\s+for\b|[.!]?\s*$)", r"\1 on \3 at \2", raw, flags=re.I)
     raw = re.sub(r"\s+(?:on\s+)?(\d{1,2}(?::\d{2})?\s*(?:am|pm))\s+(today|tomorrow)$", r" on \2 at \1", raw, flags=re.I)
     if not create_shaped(raw) and re.search(r"\s+on\s+" + _REQUEST_DATE, raw, re.I):
         raw = "create " + raw
@@ -495,7 +590,7 @@ def parse_create_request(text: str, *, now=None, pending=None, previous_answer=N
         partial = re.fullmatch(
             r"(?:create|add|schedule|book)\s+(.+?)"
             r"(?:\s+on\s+(" + _REQUEST_DATE + r"))?"
-            r"(?:\s+at\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?))?"
+            r"(?:\s+at\s+(" + _CLOCK + r"))?"
             r"(?:\s+for\s+(\d+)\s*(minutes?|mins?|hours?|hrs?))?[.]?", raw, re.I)
         if partial:
             title, date, clock, amount, unit = partial.groups()
@@ -524,9 +619,7 @@ def parse_create_request(text: str, *, now=None, pending=None, previous_answer=N
         start_dt = datetime.strptime(f"{date} {start_hm}", "%Y-%m-%d %H:%M")
         end_hm = (start_dt + timedelta(minutes=minutes)).strftime("%H:%M")
         return build_intent(title, date, start_hm, end_hm, all_day=False)
-    return build_intent(
-        title, date, _parse_time(m.group("start")), _parse_time(m.group("end")),
-        all_day=False)
+    return build_intent(title, date, *_parse_range(m.group("start"), m.group("end")), all_day=False)
 
 
 def build_intent(title, date, start_hm, end_hm, *, all_day: bool) -> dict:

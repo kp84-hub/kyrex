@@ -2,6 +2,7 @@
 import asyncio
 import io
 import json
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from types import SimpleNamespace
@@ -531,6 +532,143 @@ def test_chat_create_reaches_real_queue_review_and_replay(calendar_handoff, poli
     # A repeated owner message observes the same accepted task and result.
     assert asyncio.run(turn())[-1] == frames[-1]
     assert len(executions) == len(store.tasks_for_conversation(cid, 'alice')) == 1
+
+
+def test_dictated_calendar_fragments_reach_one_exact_spoken_create_review(calendar_handoff, monkeypatch, tmp_path):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    import voice_api
+    from voice_devices import VoiceDevices
+
+    store, conv, bot = calendar_handoff
+    bot['policy'] = serve.COORDINATOR_PRESET
+    cid = conv['conversation_id']
+    conv.pop('calendar_create_draft')
+    conv['messages'] = []
+    chat_service._write('alice', conv)
+    monkeypatch.setenv('KYREX_DATA_DIR', str(tmp_path))
+    monkeypatch.setattr(voice_api, 'identity', lambda request: ('alice', cid, 'test-client'))
+    monkeypatch.setattr(VoiceDevices, 'COOLDOWN_SECONDS', 0)
+    lease = VoiceDevices().claim('alice', 'test-client', 'Voice test')['lease']
+    expected = cal_writer.parse_create_request('Add Chinese Lantern Festival on December 5 from 6pm to 8pm')
+    reviews = []
+    writes = []
+
+    def execute(**kwargs):
+        assert kwargs['executor_prefix'] == 'cal_write'
+        intent = json.loads(kwargs['task_text'])
+        reviews.append(intent)
+        kwargs['on_approval']('create-review', 1, '', cal_writer.summary_line(intent),
+                              cal_writer.payload_display(intent))
+        for _ in range(300):
+            pending = store.get_pending_approval(kwargs['task_id'])
+            if pending and pending['operator_reply'] == 'y':
+                writes.append(intent)
+                kwargs['on_approval_resolved']('create-review', 'approved')
+                kwargs['on_result']({'status': 'ok', 'event_id': 'fixture-event',
+                                     'final_response': 'Created the reviewed event.'})
+                return
+            time.sleep(.02)
+        raise AssertionError('Voice never delivered the scoped approval')
+
+    worker = TaskWorker(store, worker_id='voice-create', executor=execute, idle_sleep=.01)
+    app = FastAPI()
+    app.include_router(voice_api.router)
+    client = TestClient(app)
+
+    def ask(text, character):
+        response = client.post('/api/voice/chat', headers={'X-Voice-Lease': lease},
+                               json={'message': text, 'request_id': character * 32})
+        assert response.status_code == 200, response.text
+        return [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith('data: ')][-1]
+
+    worker.start()
+    try:
+        assert 'event title, date, and start time' in ask('I had an event to my calendar.', '1')['content']
+        assert ask('at Chinese Lantern Festival at 6pm on 12.5', '2')['content'] == 'How long should “Chinese Lantern Festival” last?'
+        assert 'How long' in ask('and Chinese Lantern Festival at 6pm on December 5th with no end time.', '3')['content']
+        assert not store.tasks_for_conversation(cid, 'alice')
+        review = ask('2 hours from 6 to 8pm', '4')
+        assert review['voice_approval'] and 'Chinese Lantern Festival' in review['content']
+        assert reviews == [expected] and not writes
+        assert 'Created the reviewed event.' in ask('Confirm approval.', '5')['content']
+        assert writes == [expected] and len(store.tasks_for_conversation(cid, 'alice')) == 1
+    finally:
+        worker.stop()
+
+
+def test_duration_range_must_match_the_saved_start_and_length():
+    draft = {'title': 'Lantern Festival', 'date': '2026-12-05', 'time': '18:00', 'missing': 'duration'}
+    for text in ('1 hour from 6 to 8pm', '2 hours from 5 to 7pm'):
+        assert cal_writer.create_reply(text, draft)
+        with pytest.raises(cal_writer.CalendarClarification) as error:
+            cal_writer.complete_create_draft(text, draft)
+        assert error.value.draft == draft
+    assert cal_writer.complete_create_draft('until 8pm', draft)['end'] == '2026-12-05T20:00:00'
+    assert cal_writer.spoken_create_text('at Lantern Festival at 6pm on 12.5', None).startswith('at ')
+
+
+def test_voice_calendar_fallback_keeps_grounded_facts_across_different_wording(calendar_handoff, monkeypatch):
+    import calendar_voice_intent
+    store, conv, bot = calendar_handoff
+    bot['policy'] = serve.COORDINATOR_PRESET
+    conv.pop('calendar_create_draft')
+    conv['messages'] = []
+    chat_service._write('alice', conv)
+    monkeypatch.setattr(chat_service, 'get_provider', lambda *a, **kw: object())
+    calls = []
+    submissions = []
+    responses = iter([
+        {'action': 'new', 'fields': {}},
+        {'action': 'continue', 'fields': {'title': 'Neighborhood lantern walk', 'date': 'December 5, 2026',
+                                          'time': 'six in the evening'}},
+        {'action': 'continue', 'fields': {'duration': 'an hour and a half', 'location': 'Hemlock Plaza'}},
+    ])
+
+    async def extract(provider, model, prompt, data, cancel):
+        calls.append(data)
+        return next(responses)
+
+    async def submit(user, saved, target, text, cid, cancel, *, calendar_intent):
+        submissions.append(calendar_intent)
+        yield {'type': 'status', 'status': 'complete', 'content': 'Review ready.'}
+
+    monkeypatch.setattr(calendar_voice_intent.booking_chat, 'model_json', extract)
+    monkeypatch.setattr(chat_service, '_stream_writable_bot_task', submit)
+
+    def ask(text, identity):
+        async def turn():
+            return [frame async for frame in chat_service.stream_chat(
+                'alice', conv['conversation_id'], text, request_id=identity, voice_reply=True)]
+        return asyncio.run(turn())[-1]['content']
+
+    assert 'title, date, and start time' in ask('Could you pencil a block into my calendar?', 'a')
+    assert 'How long' in ask('Call the block Neighborhood lantern walk. I can make it on December 5, 2026 at six in the evening.', 'b')
+    assert not submissions and not store.list_tasks()
+    final = 'Give it an hour and a half, and make the location Hemlock Plaza.'
+    assert ask(final, 'c') == 'Review ready.'
+    assert submissions == [{'title': 'Neighborhood lantern walk', 'start': '2026-12-05T18:00:00',
+                            'end': '2026-12-05T19:30:00', 'all_day': False, 'location': 'Hemlock Plaza'}]
+    assert calls[2]['current_draft']['time'] == '18:00'
+    assert ask(final, 'c') == 'Review ready.'
+    assert len(calls) == 3 and submissions[0] == submissions[1]
+
+
+@pytest.mark.parametrize('text,fields', [
+    ('Give it a while', {'duration': 'two hours'}),
+    ('Set it to 630pm', {'time': '30pm'}),
+    ('Give it two hours and invite my team', {'duration': 'two hours'}),
+    ('End it at 8pm Pacific Time', {'end_time': '8pm'}),
+])
+def test_calendar_voice_fallback_rejects_invented_or_unsupported_facts(monkeypatch, text, fields):
+    import calendar_voice_intent
+    async def extract(*args):
+        return {'action': 'continue', 'fields': fields}
+    monkeypatch.setattr(calendar_voice_intent.booking_chat, 'model_json', extract)
+    draft = {'title': 'Lantern walk', 'date': '2026-12-05', 'time': '18:00', 'missing': 'duration'}
+    with pytest.raises(cal_writer.CalendarClarification) as exc:
+        asyncio.run(calendar_voice_intent.resolve(object(), 'fixture', text, draft, asyncio.Event()))
+    assert exc.value.draft == draft
 
 
 @pytest.mark.parametrize('mismatch', ['title', 'date', 'read', 'owner'])

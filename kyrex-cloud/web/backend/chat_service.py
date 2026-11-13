@@ -5118,6 +5118,8 @@ async def stream_chat(
     _gmail_select = None
     gmail_unsupported = False
     coordinator_ctx = None
+    voice_calendar = False
+    voice_calendar_replay = None
     if bot_binding:
         try:
             bot = resolve_bot_for_user(user, bot_binding)
@@ -5439,10 +5441,19 @@ async def stream_chat(
         # the request into ONE safe create intent and submits it to the
         # confirmation-gated executor. Ambiguous/unsupported requests are
         # answered with usage and NO task is created.
+        calendar_draft = conv.get("calendar_create_draft")
+        if voice_reply and conv.get("calendar_create_prompt"):
+            last_owner = next((m.get("id") for m in reversed(conv["messages"]) if m.get("role") == "user"), None)
+            if last_owner != conv["calendar_create_prompt"]:
+                calendar_draft = None
+                conv.pop("calendar_create_draft", None)
+                conv.pop("calendar_create_prompt", None)
+        calendar_input = cal_writer.spoken_create_text(user_content, calendar_draft) if voice_reply else user_content
+        calendar_reply = cal_writer.create_reply(calendar_input, calendar_draft)
         try:
             calendar_write_route = (dev_bot.calendar_writer_route_ready(bot)
-                                    and cal_writer.create_candidate(user_content))
-            if cal_writer.create_reply(user_content, conv.get("calendar_create_draft")):
+                                    and cal_writer.create_candidate(calendar_input))
+            if calendar_reply or (voice_reply and calendar_input != user_content):
                 calendar_write_route = (dev_bot.calendar_writer_route_ready(bot)
                                         or dev_bot.calendar_editor_route_ready(bot))
             if not calendar_write_route and dev_bot.calendar_bot_route_ready(bot):
@@ -5493,6 +5504,14 @@ async def stream_chat(
                  else "browser" if browser_route
                  else "engine")
         if fitness_read_only: route = "engine"
+        if voice_reply and not fitness_read_only and route in {"engine", "calendar_write"} and bot_owner == user:
+            import calendar_voice_intent
+            voice_calendar_replay = next(
+                (m.get("calendar_create_intent") for m in reversed(conv["messages"])
+                 if turn_user_identity and m.get("id") == turn_user_identity and m.get("role") == "user"
+                 and m.get("content") == user_content), None)
+            voice_calendar = (bool(voice_calendar_replay) or calendar_voice_intent.candidate(user_content, calendar_draft)) \
+                and dev_bot.calendar_editor_route_ready(bot)
 
     # ── workspace resolution (non-bot conversations only) ─────────────
     # Absent on the request → use the conversation's stored binding (or none).
@@ -5894,21 +5913,44 @@ async def stream_chat(
             yield frame
         return
 
-    if route == "calendar_write":
+    if route == "calendar_write" or voice_calendar:
         # Resolve reminder references within this conversation before using
         # the same deterministic writer and exact-payload approval.
         purchase_question = cal_writer.calendar_and_purchase_question(user_content)
         if purchase_question:
             conv.pop("calendar_create_draft", None)
+        intent = None
         try:
-            intent = cal_writer.parse_create_request(user_content,
-                pending=conv.get("calendar_create_draft") if cal_writer.create_reply(user_content, conv.get("calendar_create_draft")) else None,
-                previous_answer=_previous_calendar_answer(conv["messages"], turn_anchor))
-            conv.pop("calendar_create_draft", None)
-            _write(user, conv)
+            grammar_error = None
+            if voice_calendar and voice_calendar_replay:
+                intent = cal_writer.validate_intent(voice_calendar_replay)
+            elif route == "calendar_write":
+                try:
+                    intent = cal_writer.parse_create_request(calendar_input,
+                        pending=calendar_draft if calendar_reply else None,
+                        previous_answer=_previous_calendar_answer(conv["messages"], turn_anchor))
+                except cal_writer.CalendarClarification:
+                    raise
+                except cal_writer.CalendarWriterError as exc:
+                    if not voice_calendar or purchase_question:
+                        raise
+                    grammar_error = exc
+            if intent is None and voice_calendar and provider_cfg.get("api_key") and provider_cfg.get("model"):
+                provider = get_provider(provider_cfg["provider"], provider_cfg["api_key"],
+                                        base_url=provider_cfg.get("base_url") or None,
+                                        extra_headers=provider_cfg.get("headers") or None)
+                intent = await calendar_voice_intent.resolve(provider, provider_cfg["model"],
+                                                              user_content, calendar_draft, cancel)
+            if intent is None and grammar_error:
+                raise grammar_error
+        except asyncio.CancelledError:
+            yield {"type": "status", "status": "cancelled", "content": ""}
+            return
         except cal_writer.CalendarWriterError as exc:
             if isinstance(exc, cal_writer.CalendarClarification):
                 conv["calendar_create_draft"] = exc.draft
+            if voice_reply and (isinstance(exc, cal_writer.CalendarClarification) or calendar_reply):
+                conv["calendar_create_prompt"] = turn_anchor["id"]
             content = sanitize_assistant_text(str(exc)) or str(exc)
             if purchase_question:
                 content += "\n\nYou’ll need to place the order yourself."
@@ -5917,11 +5959,20 @@ async def stream_chat(
             _write(user, conv)
             yield {"type": "status", "status": "complete", "content": content}
             return
-        async for frame in _stream_writable_bot_task(
-                user, conv, bot, user_content, conversation_id, cancel,
-                calendar_intent=intent):
-            yield frame
-        return
+        if intent is not None:
+            if cancel.is_set():
+                yield {"type": "status", "status": "cancelled", "content": ""}
+                return
+            conv.pop("calendar_create_draft", None)
+            conv.pop("calendar_create_prompt", None)
+            if voice_reply:
+                turn_anchor["calendar_create_intent"] = intent
+            _write(user, conv)
+            async for frame in _stream_writable_bot_task(
+                    user, conv, bot, user_content, conversation_id, cancel,
+                    calendar_intent=intent):
+                yield frame
+            return
 
     engine_session: Optional[EngineSession] = None
     if resolved_ws is not None:
