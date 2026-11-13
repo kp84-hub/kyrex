@@ -358,9 +358,9 @@ def _target_terms(anchor):
     return out
 
 
-def _phrase_re(terms):
+def _phrase_re(terms, *, minimum=MIN_TARGET_TERMS):
     """A strong (contiguous) target-phrase matcher, or None below the floor."""
-    if len(terms) < MIN_TARGET_TERMS:
+    if len(terms) < minimum:
         return None
     return re.compile(r"\b" + r"[\s\W_]+".join(re.escape(t) for t in terms)
                       + r"\b", re.IGNORECASE)
@@ -464,7 +464,7 @@ def _title_case_phrase(text):
     return " ".join(out)
 
 
-def localize_target_event(text, anchor) -> dict:
+def localize_target_event(text, anchor, *, explicit_topic=False) -> dict:
     """Isolate the ONE target event entry *anchor* names, or fail closed.
 
     Returns ``{"status", "text", "title"}``:
@@ -478,7 +478,7 @@ def localize_target_event(text, anchor) -> dict:
     """
     result = {"status": "none", "text": "", "title": ""}
     source = str(text or "")
-    rx = _phrase_re(_target_terms(anchor))
+    rx = _phrase_re(_target_terms(anchor), minimum=1 if explicit_topic else MIN_TARGET_TERMS)
     if rx is None or not source:
         return result
     dates = _date_spans(source)
@@ -486,7 +486,14 @@ def localize_target_event(text, anchor) -> dict:
         return result
     groups: dict = {}
     for m in rx.finditer(source):
-        date = min(dates, key=lambda d: _span_distance(d, m.start(), m.end()))
+        candidates = dates
+        if explicit_topic:
+            lo = source.rfind("\n", 0, m.start()) + 1
+            hi = source.find("\n", m.end())
+            if hi < 0:
+                hi = len(source)
+            candidates = [d for d in dates if lo <= d[0] and d[1] <= hi] or dates
+        date = min(candidates, key=lambda d: _span_distance(d, m.start(), m.end()))
         if _span_distance(date, m.start(), m.end()) > MAX_TARGET_DATE_DISTANCE:
             continue                      # no attached date -> not localized
         key = _date_identity(source, date)
