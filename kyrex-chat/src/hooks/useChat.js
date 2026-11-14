@@ -788,6 +788,7 @@ export function useChat() {
             content: terminal.content || sanitizeAssistantText(full),
             ...(terminal.developer_result ? { developer_result: true, events: terminal.events } : {}),
             ...(terminal.developer_has_changes ? { developer_has_changes: true } : {}),
+            ...(terminal.developer_verification ? { developer_verification: terminal.developer_verification } : {}),
             ...(terminal.workout_report ? { workout_report: terminal.workout_report } : {}),
             ...(terminal.sleep_report ? { sleep_report: terminal.sleep_report } : {}),
             ...(terminal.email_draft ? { email_draft: terminal.email_draft } : {}),
@@ -818,6 +819,8 @@ export function useChat() {
             // An executor failure is authoritative, unlike a broken viewer.
             // Fetch the saved result without submitting another repository task.
             updateAssistant({ content: full, streaming: false, approval: null,
+              ...(terminal.developer_result ? { developer_result: true, events: terminal.events } : {}),
+              ...(terminal.developer_verification ? { developer_verification: terminal.developer_verification } : {}),
               error: terminal.message || 'Task failed', connection_interrupted: false,
               task_recovery: true, task: { taskId: durableTaskId, status: 'failed' } });
           } else if (durableTaskId) recoverTask(full);

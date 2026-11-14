@@ -921,6 +921,16 @@ select.bot-picker.is-working {
 .developer-activity > .message-content { margin-top: 8px; }
 .developer-activity-timeline { margin: 4px 0 8px; padding-inline-start: 22px; }
 .developer-activity-timeline li + li { margin-top: 4px; }
+.developer-verification {
+  margin: 12px 0 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.developer-verification p, .developer-verification ul { margin: 4px 0; }
+.developer-verification ul { padding-inline-start: 20px; }
 .developer-delegation-line .delegated-chat-link { margin-inline-start: auto; }
 
 .developer-changes {

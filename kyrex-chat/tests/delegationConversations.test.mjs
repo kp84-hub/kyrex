@@ -80,7 +80,7 @@ try {
   terminal = true; row.status = 'done'; row.result_summary = result;
   await act(async () => source.emit('end', { status: 'done' }));
   assert.ok(targetReads > priorReads, 'stream completion retrieves the saved target result immediately');
-  assert.match(div.querySelector('.work-result-details').textContent, /Full technical evidence/);
+  assert.match(div.querySelector('.developer-activity .markdown').textContent, /Full technical evidence/);
   assert.equal(card.querySelector('[role="status"]'), null);
   const parentItem = [...div.querySelectorAll('.conversation-item')].find(el => el.textContent.includes('The Overwatcher'));
   await act(async () => parentItem.click());

@@ -3624,7 +3624,7 @@ async def _stream_existing_bot_task(user, conv, store, task_id, cancel_event, *,
     # re-driven turn can never append the same result text twice. (Computed
     # AFTER the submission produces the id.)
     turn_writable_identity = f"task-{task_id}-result"
-    from developer_updates import DEVELOPER_EXECUTORS
+    from developer_updates import DEVELOPER_EXECUTORS, public_progress
     developer_task = (store.get(task_id) or {}).get("executor_prefix") in DEVELOPER_EXECUTORS
 
     yield {"type": "conversation", "conversation_id": conversation_id}
@@ -3690,8 +3690,14 @@ async def _stream_existing_bot_task(user, conv, store, task_id, cancel_event, *,
                 continue
             frame = _bot_task_event_frame(event, store, task_id)
             if frame is not None:
-                if developer_task and frame["type"] == "task":
-                    frame["developer_result"] = True
+                if developer_task:
+                    if frame["type"] == "task":
+                        frame["developer_result"] = True
+                    if frame["type"] == "progress":
+                        notes = public_progress([{**frame["payload"], "event_id": event.get("event_id")}])
+                        if not notes:
+                            continue
+                        frame["payload"] = notes[0]
                 yield frame
 
         task = store.get(task_id) or {}
@@ -3736,7 +3742,7 @@ async def _stream_existing_bot_task(user, conv, store, task_id, cancel_event, *,
         elif status == "failed":
             message = _task_failure_detail(task, final_result)
             yield {"type": "status", "status": "error", "message": message,
-                   "task_id": task_id, "task_status": "failed"}
+                   "task_id": task_id, "task_status": "failed", **_developer_presentation(store, task)}
         elif status == "cancelled":
             yield {"type": "status", "status": "cancelled", "content": ""}
         else:
@@ -3785,14 +3791,16 @@ def _gmail_model_delegation_view(store, view: dict) -> dict:
 
 
 def _developer_presentation(store, task):
-    from developer_updates import DEVELOPER_EXECUTORS, public_progress
+    from developer_updates import DEVELOPER_EXECUTORS, public_progress, public_verification
     if task.get("executor_prefix") not in DEVELOPER_EXECUTORS:
         return {}
     result = task.get("result")
     changes = (isinstance(result, dict) and task.get("status") == "done"
                and result.get("mode") == "developer" and result.get("has_changes") is True)
+    verification = public_verification(result)
     return {"developer_result": True,
             **({"developer_has_changes": True} if changes else {}),
+            **({"developer_verification": verification} if verification is not None else {}),
             **({"developer_status": task["status"]} if task.get("status") in {"failed", "cancelled"} else {}),
             "events": [
         {"kind": "progress", "payload": note}

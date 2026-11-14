@@ -173,6 +173,10 @@ async def _drive_stream(gen, request_id: str, conversation_id: str):
                 })
             elif t == "status":
                 status = frame.get("status")
+                developer = ({"developer_result": True, "events": frame.get("events") or []}
+                             if frame.get("developer_result") else {})
+                if frame.get("developer_verification") is not None:
+                    developer["developer_verification"] = frame["developer_verification"]
                 if status == "complete":
                     yield _sse_frame({"type": "done",
                                       "content": frame.get("content", ""),
@@ -185,8 +189,7 @@ async def _drive_stream(gen, request_id: str, conversation_id: str):
                                       **({'email_draft':frame['email_draft']} if frame.get('email_draft') else {}),
                                       **({'gmail_cleanup':frame['gmail_cleanup']} if frame.get('gmail_cleanup') else {}),
                                       **({'maps_route': frame['maps_route']} if frame.get('maps_route') else {}),
-                                      **({"developer_result": True, "events": frame.get("events") or []}
-                                         if frame.get("developer_result") else {}),
+                                      **developer,
                                       **({"developer_has_changes": True} if frame.get("developer_has_changes") else {})})
                 elif status == "cancelled":
                     yield _sse_frame({"type": "cancelled",
@@ -194,6 +197,7 @@ async def _drive_stream(gen, request_id: str, conversation_id: str):
                 else:
                     yield _sse_frame({"type": "error",
                                       "message": frame.get("message", "provider error"),
+                                      **developer,
                                       **({"task_id": frame["task_id"], "task_status": "failed"}
                                          if frame.get("task_id") and frame.get("task_status") == "failed"
                                          else {})})

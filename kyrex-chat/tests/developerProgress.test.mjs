@@ -59,7 +59,12 @@ await act(async () => div.querySelector('.delegated-chat-link').click());
 assert.equal(opened, 'dev-chat');
 
 const events = progress.map(payload => ({ kind: 'progress', payload }));
-async function* stream() { yield { type: 'done', content: text, developer_result: true, developer_has_changes: true, events }; }
+const verification = { head: 'a'.repeat(40), freshness: 'unverified', checks: [
+  { kind: 'tests', outcome: 'failure', exit_code: 1 },
+  { kind: 'build', outcome: 'success', exit_code: 0 },
+] };
+async function* stream() { yield { type: 'done', content: text, developer_result: true,
+  developer_has_changes: true, developer_verification: verification, events }; }
 const { terminal } = await consumeStream(stream());
 assert.equal(terminal.developer_result, true);
 assert.deepEqual(terminal.events, events);
@@ -78,13 +83,20 @@ assert.deepEqual([...activity.querySelectorAll('li')].map(li => li.textContent),
 let reviewedReport;
 // The exact same shape is used by live completion and persisted reloads.
 await renderMessage({ ...liveMessage, task: null, content: terminal.content, events: terminal.events,
-  developer_has_changes: terminal.developer_has_changes }, report => { reviewedReport = report; });
+  developer_has_changes: terminal.developer_has_changes,
+  developer_verification: terminal.developer_verification }, report => { reviewedReport = report; });
 assert.equal(div.querySelector('.developer-activity'), card, 'the live card becomes the result');
 assert.equal(activity.open, true);
 await act(async () => card.querySelector('.delegated-chat-link').click());
 assert.equal(reviewedReport, terminal.content);
-assert.equal(div.querySelector('.work-result-details').open, false);
+assert.equal(div.querySelector('.work-result-details'), null);
 assert.match(div.querySelector('.markdown').textContent, /Fixed the parser/);
+assert.match(div.querySelector('.markdown').textContent, /Detailed implementation evidence/);
+assert.match(card.querySelector('.developer-verification').textContent, /Freshness was unverified/);
+assert.match(card.querySelector('.developer-verification').textContent, /Test command failed \(exit 1\)/);
+assert.match(card.querySelector('.developer-verification').textContent, /Build command exited 0/);
+await renderMessage({ ...liveMessage, task: null, content: 'Read the source.', developer_verification: { checks: [] } });
+assert.match(card.querySelector('.developer-verification').textContent, /No test, build, lint, diff, or GitHub checks recorded/);
 await act(async () => root.render(React.createElement(Message, { message: {
   role: 'assistant', content: text,
 } })));
