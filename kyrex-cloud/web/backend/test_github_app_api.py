@@ -25,7 +25,9 @@ def test_mobile_start_register_install_authorize_finish(setup, monkeypatch):
     assert page.status_code == 200 and 'Continue on GitHub' in page.text
     assert "form-action https://github.com" in page.headers['content-security-policy']
     manifest = json.loads(html.unescape(re.search(r"name='manifest' value='([^']+)'", page.text)[1]))
-    assert manifest['default_permissions'] == {'contents': 'read', 'metadata': 'read'}
+    assert manifest['default_permissions'] == {
+        'contents': 'read', 'metadata': 'read', 'checks': 'read', 'statuses': 'read',
+    }
     registered = client.get('/api/connections/github/registered', params={'state': state(url), 'code': 'reg'}, follow_redirects=False)
     assert registered.status_code == 303
     install = registered.headers['location']
