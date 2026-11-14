@@ -10,7 +10,7 @@ import chat_api
 import git_workflow
 import threading
 from task_store import CloudTaskStore
-from developer_updates import public_progress
+from developer_updates import public_progress, public_verification
 
 
 def test_real_tool_stages_are_bounded_and_honest(monkeypatch):
@@ -80,7 +80,10 @@ def test_delegation_polls_only_linked_owned_progress(tmp_path, monkeypatch):
 def test_final_reply_reloads_with_activity_and_full_text(tmp_path, monkeypatch):
     store, conv, tid, _ = setup_task(tmp_path, monkeypatch)
     text = "Fixed the parser.\n\n" + "Detailed evidence. " * 180 + "\nChecks: 3 passed."
-    store.complete(tid, {"mode": "developer", "status": "completed", "has_changes": True, "final_response": text})
+    sha = "a" * 40
+    store.complete(tid, {"mode": "developer", "status": "completed", "has_changes": True, "final_response": text,
+                         "workspace_freshness": {"head": sha, "status": "current"},
+                         "verification": [{"kind": "tests", "outcome": "failure", "exit_code": 1}]})
     first = chat_service.get_conversation("owner", conv["conversation_id"])
     second = chat_service.get_conversation("owner", conv["conversation_id"])
     assert first["messages"] == second["messages"]
@@ -88,6 +91,8 @@ def test_final_reply_reloads_with_activity_and_full_text(tmp_path, monkeypatch):
     assert message["content"] == text
     assert message["developer_result"] is True
     assert message["developer_has_changes"] is True
+    assert message["developer_verification"] == {"head": sha, "freshness": "current",
+        "checks": [{"kind": "tests", "outcome": "failure", "exit_code": 1}]}
     assert message["events"][-1]["payload"]["stage"] == "Running checks…"
     assert message["events"][-1]["payload"]["event_id"] > message["events"][0]["payload"]["event_id"]
     monkeypatch.setattr(chat_service.dev_bot, "submit_bot_task", lambda *a, **k: tid)
@@ -99,11 +104,13 @@ def test_final_reply_reloads_with_activity_and_full_text(tmp_path, monkeypatch):
     # Verify the same metadata reaches the live SSE path as the reload path.
     frames = asyncio.run(collect())
     payloads = [json.loads(frame.removeprefix("data: ")) for frame in frames]
+    assert "PRIVATE" not in json.dumps(payloads)
     done = next(frame for frame in payloads if frame["type"] == "done")
     assert next(frame for frame in payloads if frame["type"] == "task")["developer_result"] is True
     assert done["developer_result"] is True
     assert done["developer_has_changes"] is True
     assert done["events"] == message["events"]
+    assert done["developer_verification"] == message["developer_verification"]
     assert len(store.tasks_for_conversation(conv["conversation_id"], "owner")) == 1
 
 
@@ -120,7 +127,8 @@ def test_progress_query_is_bounded(tmp_path):
 
 def test_failed_task_sse_preserves_authoritative_outcome(tmp_path, monkeypatch):
     store, conv, tid, _ = setup_task(tmp_path, monkeypatch)
-    store.fail(tid, "Workspace command unavailable")
+    store.complete(tid, {"mode": "developer", "status": "error", "errors": ["Workspace command unavailable"],
+                         "verification": [{"kind": "build", "outcome": "timeout"}]})
     monkeypatch.setattr(chat_service.dev_bot, "submit_bot_task", lambda *a, **k: tid)
 
     async def collect():
@@ -130,8 +138,10 @@ def test_failed_task_sse_preserves_authoritative_outcome(tmp_path, monkeypatch):
                 async for frame in chat_api._drive_stream(gen, "request", conv["conversation_id"])]
 
     terminal = asyncio.run(collect())[-1]
-    assert terminal == {"type": "error", "message": "Workspace command unavailable",
-                        "task_id": tid, "task_status": "failed"}
+    assert terminal["type"] == "error"
+    assert terminal["message"] == "Workspace command unavailable"
+    assert (terminal["task_id"], terminal["task_status"]) == (tid, "failed")
+    assert terminal["developer_verification"] == {"checks": [{"kind": "build", "outcome": "timeout"}]}
     assert len(store.tasks_for_conversation(conv["conversation_id"], "owner")) == 1
 
 
@@ -147,3 +157,34 @@ def test_viewer_exception_is_not_an_executor_failure():
     terminal = asyncio.run(collect())[-1]
     assert terminal == {"type": "error", "message": "Chat request failed. Try again."}
     assert "task_status" not in terminal
+
+
+def test_verification_comes_from_tool_results_without_commands_or_output():
+    checks = []
+    relay = git_workflow.developer_progress(lambda event: None, checks)
+
+    def tool(name, args, result):
+        relay({"type": "tool_start", "name": name, "args": args})
+        relay({"type": "tool_result", "name": name, "result": result})
+
+    relay({"type": "token", "content": "All checks passed!"})
+    tool("run_command", {"command": "pytest private-path"}, {"returncode": 1, "output": "PRIVATE"})
+    tool("run_command", {"command": "pytest || true"}, {"returncode": 0})
+    tool("run_command", {"command": "npm run build"}, {"returncode": 0})
+    relay({"type": "tool_result", "name": "run_command", "result": {"returncode": 0}})
+    sha = "a" * 40
+    tool("github_read", {"action": "checks", "repository": "example/repo", "ref": sha},
+         {"repository": "example/repo", "sha": sha,
+          "check_runs": [{"status": "in_progress", "conclusion": None, "name": "PRIVATE"}],
+          "status_contexts": [{"state": "success"}], "unavailable_permissions": ["read"]})
+    verification = public_verification({"mode": "developer", "verification": checks,
+                                        "workspace_freshness": {"head": sha, "status": "behind",
+                                                               "remote_head": "b" * 40, "reason": "PRIVATE"}})
+    assert verification == {"head": sha, "freshness": "behind", "remote_head": "b" * 40, "checks": [
+        {"kind": "tests", "runner": "pytest", "outcome": "failure", "exit_code": 1},
+        {"kind": "build", "runner": "npm run build", "outcome": "success", "exit_code": 0},
+        {"kind": "github", "url": f"https://github.com/example/repo/commit/{sha}/checks", "partial": True,
+         "counts": {"failed": 0, "other": 0, "passed": 1, "pending": 1}},
+    ]}
+    assert public_verification({"mode": "developer"}) is None
+    assert public_verification({"mode": "developer", "verification": []}) == {"checks": []}

@@ -7,7 +7,6 @@ import EmailDraftCard from './EmailDraftCard.jsx';
 import { GmailCleanupCard } from './GmailCleanup.jsx';
 import EventSuggestionCard from './EventSuggestionCard.jsx';
 import MessageDraftCard from './MessageDraftCard.jsx';
-import WorkResult from './WorkResult.jsx';
 import DeveloperActivity from './DeveloperActivity.jsx';
 import WorkoutReport from './WorkoutReport.jsx';
 import SleepReport from './SleepReport.jsx';
@@ -187,7 +186,7 @@ export default function Message({ message, conversationId, onRetry, isLastAssist
             ? () => onReviewDeveloperChanges(assistantText) : undefined}>
             {assistantText && <div className="message-content markdown" data-message-selection>
               {message.streaming ? <span className="streaming-text">{assistantText}</span>
-                : <WorkResult text={assistantText} components={markdownComponents} />}
+                : <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{assistantText}</ReactMarkdown>}
             </div>}
             {approvalPrompt}
           </DeveloperActivity>

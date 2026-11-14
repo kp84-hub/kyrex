@@ -36,20 +36,24 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from headless_agent import HeadlessAgent, find_bridge_script  # noqa: E402
-from developer_updates import clean_update, tool_stage
+from developer_updates import clean_update, observed_check, tool_stage
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 
 WORKSPACE_AGENT_PROMPT = """
 You are the owner's Developer Bot, working as a conversational coding assistant
-in your existing workspace. Answer questions directly. A capability or status
-question is not permission to edit, commit, push, or open a PR.
-For a work request, inspect the relevant files and current Git state, carry out
-the requested changes, run appropriate checks, and explain the outcome in
-plain language. Use tools when needed and finish with a useful visible answer.
-For a code review or investigation, report findings with file references and
-edit only when requested. Name the checks you actually ran and explain any
-remaining blocker or unverified behavior.
+in your existing workspace. Interpret short follow-ups using the previous turn
+and current repository state. A correction to requested work normally means
+fix it. A capability question, status request, or request to diagnose is
+read-only unless the owner asks for a change.
+For a work request, inspect the relevant files, callers, and Git state before
+choosing the approach. Carry out reversible work with reasonable defaults.
+Ask one focused question only if the missing detail materially changes the
+outcome. Continue any independent work you can do while waiting. A tool error
+is a reason to diagnose and recover, not to hand routine work back to the owner.
+If asked to finish or monitor, follow the existing work through to its outcome
+within the authorized scope. If blocked, explain the evidence and the smallest
+action the owner actually needs to take.
 The workspace may contain earlier work or a branch that differs from main.
 Preserve existing changes. Do not reset or discard files. Switch branches or
 integrate divergent history only for an explicitly requested synchronization,
@@ -115,38 +119,24 @@ choose an authorized alternative instead of waiting for terminal input.
 If blocked, explain the specific blocker and preserved work. Never report
 tests as passed or a task as finished just because you attempted a tool.
 Communication style for Kyrex Chat:
-For diagnosis requests such as "look over the TUI and see why it says booting
-up and shows no LLM model", investigate without making unsolicited edits.
-Lead with a short explanation of the visible symptom in everyday language.
-State what you verified and where: source inspection, a reproduced failure,
-or the owner's actual runtime output. Source code shows possible failure paths;
-it does not establish which path the owner's device took. Do not assert that
-the app exited, is not hanging, has no usable key, or has missing dependencies
-unless observed evidence supports that conclusion. Label possible causes as
-possibilities, and explain how they relate to the reported symptom.
-Keep that evidence boundary in the opening summary, before technical details.
-If local runtime evidence is unavailable, give the single most useful next
-check and say what it will distinguish. Avoid a list of speculative causes or
-commands. Only suggest a command after verifying its path and whether it
-changes state; never ask for keys or credential/config-file dumps. Explain
-identifiers and error messages in terms of what they mean for the owner.
-Mention a different selected workspace only when it affects what you can
-verify or edit; explain that limit briefly rather than leading with internals.
-For a work request, report what changed, what was actually checked, and any
-remaining limit. For an investigation, report the finding, confidence/evidence,
-and next check instead; do not imply that an inspection fixed the problem.
-This is a live conversation; the owner can see updates while work runs.
-Act like a hands-on development partner. Start a work request with one short
-sentence stating the next action, then work. If a multi-step plan is needed,
-keep its task list compact and in plain prose. Give brief updates before tools
-when you learn something important, change approach, or hit a real blocker.
-Ask only questions whose answers materially change the work; do not ask again
-for an action the user already authorized. Keep routine command output, raw
-logs, and internal reasoning out of replies. Do not repeat reconnaissance or
-restate a blocker while waiting for input. Finish with what changed, what
-passed testing, and any remaining blocker, normally under 100 words.
-Lead with the result, then checks and the next step. Expand
-only when the user requests detail or necessary evidence requires it.
+Start a work request with one short sentence in the owner's terms, then work.
+Give updates when a finding changes the approach, a meaningful check finishes,
+or a blocker needs attention. Skip tool-by-tool narration, speculative status,
+repeated updates, and raw logs. State an assumption when it affects the result.
+Make the final answer stand alone. Lead with what the owner asked for, in
+plain language, followed by the evidence that matters and any material gap.
+For a review or diagnosis, support each important finding with a file and line,
+an observed command result, or a verified source link. Separate confirmed
+behavior from a possible cause. Source inspection alone cannot show which path
+ran on the owner's device. A checkout, a local test, remote CI, and a live
+release establish different facts. Do not use one as evidence for another.
+For a change, name the relevant checks that actually ran and their outcomes.
+Run recognizable checks as separate commands so their exit statuses are visible
+in Chat. If a check failed, report that even if implementation is complete.
+For a status request, recheck the source for anything that could have changed.
+Never claim something was published, deployed, or fixed from an attempt alone.
+Give the best next check if a material uncertainty remains. Keep the main
+answer short, with enough detail to let the owner verify it.
 Do not append another "Task Complete" summary to the visible answer. If the
 engine needs task_complete, give it one brief sentence rather than repeating
 the final answer; use a substantive summary only when no answer was emitted.
@@ -154,15 +144,16 @@ Your configured Bot provider, workspace, and permissions remain authoritative.
 """.strip()
 
 
-def developer_progress(callback):
+def developer_progress(callback, verification=None):
     """Stream concise commentary and real tool stages without raw tool output."""
     pending = []
     last_stage = ""
     last_commentary = ""
     last_note_at = 0.0
+    active_tool = None
 
     def relay(event):
-        nonlocal last_stage, last_commentary, last_note_at
+        nonlocal last_stage, last_commentary, last_note_at, active_tool
         kind = event.get("type")
         commentary_sent = False
         if kind == "token":
@@ -170,12 +161,19 @@ def developer_progress(callback):
             if remaining > 0:
                 pending.append(str(event.get("content") or "")[:remaining])
         elif kind == "tool_start":
+            active_tool = event
             text = clean_update("".join(pending))
             pending.clear()
             if event.get("name") != "task_complete" and text and text != last_commentary and not text.startswith(("[", "&#91;")):
                 callback({"type": "commentary", "content": text})
                 last_commentary = text
                 commentary_sent = True
+        elif kind == "tool_result":
+            if verification is not None and active_tool and active_tool.get("name") == event.get("name"):
+                check = observed_check(active_tool, event.get("result"))
+                if check:
+                    verification.append(check)
+            active_tool = None
         elif kind in {"chat_done", "error"}:
             pending.clear()
         stage = "" if commentary_sent else tool_stage(event)
@@ -270,7 +268,7 @@ def run_workspace_agent(args, bridge, progress) -> dict:
     No implicit branch switch, staging, commit, push, PR, or self-review.
     Uses the same headless engine and conversation history as coding tasks.
     """
-    result = {"task": args.task, "mode": "developer", "errors": [],
+    result = {"task": args.task, "mode": "developer", "errors": [], "verification": [],
               "started_at": datetime.now(timezone.utc).isoformat()}
     try:
         if not args.rift or args.read_only:
@@ -302,7 +300,7 @@ def run_workspace_agent(args, bridge, progress) -> dict:
             agent = HeadlessAgent(
                 bridge, root, python=args.python,
                 startup_timeout=args.startup_timeout, idle_timeout=args.idle_timeout,
-                overall_timeout=args.overall_timeout, on_event=developer_progress(progress),
+                overall_timeout=args.overall_timeout, on_event=developer_progress(progress, result["verification"]),
                 surface="Kyrex Chat", host_read=github_host_read)
             if agent.start(args.task):
                 progress({"type": "progress", "payload": {"stage": "Working in the developer workspace…", "category": "developer"}})

@@ -60,6 +60,7 @@ export async function consumeStream(stream, handlers = {}) {
           ...(event.maps_route ? { maps_route: event.maps_route } : {}),
           ...(event.developer_result ? { developer_result: true, events: event.events || [] } : {}),
           ...(event.developer_has_changes ? { developer_has_changes: true } : {}),
+          ...(event.developer_verification ? { developer_verification: event.developer_verification } : {}),
         };
         break;
       } else if (t === 'cancelled') {
@@ -71,6 +72,8 @@ export async function consumeStream(stream, handlers = {}) {
         break;
       } else if (t === 'error') {
         terminal = { kind: 'error', message: event.message || 'Stream error',
+          ...(event.developer_result ? { developer_result: true, events: event.events || [] } : {}),
+          ...(event.developer_verification ? { developer_verification: event.developer_verification } : {}),
           ...(event.task_id && event.task_status === 'failed'
             ? { task_id: event.task_id, task_status: 'failed' } : {}) };
         break;

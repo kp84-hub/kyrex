@@ -58,8 +58,8 @@ def test_workspace_question_and_edit_preserve_existing_work(tmp_path, monkeypatc
             assert root == tmp_path
             assert os.environ['KYREX_CHAT_SYSTEM_PROMPT'].startswith('Original Bot identity')
             assert 'Preserve existing changes' in os.environ['KYREX_CHAT_SYSTEM_PROMPT']
-            assert 'normally under 100 words' in os.environ['KYREX_CHAT_SYSTEM_PROMPT']
-            assert 'Give brief updates before tools' in os.environ['KYREX_CHAT_SYSTEM_PROMPT']
+            assert 'Make the final answer stand alone' in os.environ['KYREX_CHAT_SYSTEM_PROMPT']
+            assert 'Skip tool-by-tool narration' in os.environ['KYREX_CHAT_SYSTEM_PROMPT']
             assert 'Repository freshness:' in os.environ['KYREX_CHAT_SYSTEM_PROMPT']
             assert 'timeout_seconds=120' in os.environ['KYREX_CHAT_SYSTEM_PROMPT']
             assert 'next_char_offset' in os.environ['KYREX_CHAT_SYSTEM_PROMPT']
