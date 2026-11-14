@@ -5274,6 +5274,20 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                 if connected_repository and executor_prefix == "repo":
                     raise RuntimeError("Use a normal Developer Bot request for this repository, then Repository > Review changes to publish.")
 
+        if executor_prefix == 'developer' and task_text.startswith('{'):
+            from vision import developer_screenshot_request, describe_developer_screenshot
+            screenshot = developer_screenshot_request(ctx, str(chat_id), task_text, conversation_id, task_id)
+            if screenshot:
+                if on_progress:
+                    on_progress({'stage': 'Reading the screenshot for the repository task…', 'category': 'developer'})
+                task_text = describe_developer_screenshot(str(chat_id), *screenshot, task_id)
+                if task_text is None:
+                    return
+                live_bot = bots.load_bots().get(ctx.bot_id) or {}
+                if (live_bot.get('owner') != ctx.bot_owner or live_bot.get('rift') != ctx.rift_path
+                        or not bots.is_running(live_bot) or not is_writable_bot_policy(live_bot.get('policy'))):
+                    raise RuntimeError('Developer Bot permission or workspace changed while reading the screenshot.')
+
         executor_script = EXECUTORS[executor_prefix]
         # Executors must not know about Bots — they receive an authorised
         # filesystem root or nothing.  When the context has a rift_path
@@ -5471,10 +5485,10 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                     # treated as-is (bare word).
                     if "." in op:
                         colon_op = op.replace(".", ":", 1)
-                        executor_prefix = op.split(".")[0]
+                        operation_prefix = op.split(".")[0]
                     else:
                         colon_op = op
-                        executor_prefix = op
+                        operation_prefix = op
 
                     # Host derives the tier purely from the operation
                     # itself (OPERATION_TIERS) plus scope and volume
@@ -5483,7 +5497,7 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                     # host derives alone; the stripped value is only
                     # logged. Unknown ops are denied just below.
                     _is_external_repo = (
-                        executor_prefix == "repo" and bool(repo_url)
+                        operation_prefix == "repo" and bool(repo_url)
                         and not is_own_repo(repo_url)
                     )
                     derived_tier = derive_host_tier(

@@ -176,3 +176,53 @@ def test_missing_encryption_fails_before_network(connection, monkeypatch):
     import connectors
     with pytest.raises(connectors.ConnectorError): c.connect('alice', TOKEN, ['owner/private'])
     assert not calls
+
+
+def test_commit_checks_are_ref_bound_and_hide_provider_output(connection):
+    c, calls = connection
+    c.connect('alice', TOKEN, ['owner/private'])
+    sha = 'a' * 40
+
+    def transport(token, path, params):
+        assert token == TOKEN and params == {'per_page': 25}
+        assert path.startswith('/repos/owner/private/commits/' + sha + '/')
+        calls.append((token, path, params))
+        if path.endswith('/check-runs'):
+            return {'total_count': 2, 'check_runs': [
+                {'name': 'Cloudflare Pages', 'head_sha': sha, 'status': 'in_progress',
+                 'conclusion': None, 'output': {'summary': 'private provider output'}},
+                {'name': 'Wrong ref', 'head_sha': 'b' * 40, 'status': 'completed',
+                 'conclusion': 'success'},
+            ]}
+        return {'sha': sha, 'total_count': 1, 'statuses': [
+            {'context': 'integration', 'state': 'failure', 'target_url': 'private provider URL'}]}
+
+    c.transport = transport
+    result = c.read('alice', 'checks', 'owner/private', ref=sha)
+    assert result['check_runs'] == [{'name': 'Cloudflare Pages', 'status': 'in_progress', 'conclusion': None}]
+    assert result['status_contexts'] == [{'name': 'integration', 'state': 'failure'}]
+    assert result['truncated'] and not result['unavailable_permissions']
+    assert 'private provider' not in json.dumps(result)
+    count = len(calls)
+    for owner, repo, ref in [('bob', 'owner/private', sha), ('alice', 'owner/other', sha),
+                             ('alice', 'owner/private', 'main')]:
+        with pytest.raises(GitHubError):
+            c.read(owner, 'checks', repo, ref=ref)
+    assert len(calls) == count
+
+
+def test_commit_checks_report_permission_gaps_separately(connection):
+    c, _ = connection
+    c.connect('alice', TOKEN, ['owner/private'])
+    sha = 'a' * 40
+
+    def transport(token, path, params):
+        if path.endswith('/check-runs'):
+            error = GitHubError('access denied'); error.http_status = 403
+            raise error
+        return {'sha': sha, 'total_count': 0, 'statuses': []}
+
+    c.transport = transport
+    result = c.read('alice', 'checks', 'owner/private', ref=sha)
+    assert result['check_runs'] == result['status_contexts'] == []
+    assert result['unavailable_permissions'] == ['Checks: read']

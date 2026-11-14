@@ -217,7 +217,7 @@ def validate_developer_rift(bot) -> None:
         )
 
 
-def submit_bot_task(user, bot, task_text, store=None, conversation_id=None):
+def submit_bot_task(user, bot, task_text, store=None, conversation_id=None, *, task_id=None):
     """Enqueue a conversational workspace turn on the existing CloudTaskStore.
 
     Refuses (fail closed) when the Bot is not RUNNING (no new work for a
@@ -269,6 +269,7 @@ def submit_bot_task(user, bot, task_text, store=None, conversation_id=None):
         executor_prefix = "repo"
         task_text = task_text.split(":", 1)[1].strip()
     return store.submit(
+        **({"task_id": task_id} if task_id else {}),
         session_key=bot_id,
         task_text=task_text,
         repo_url=None,

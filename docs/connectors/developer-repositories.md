@@ -35,6 +35,21 @@ reader access before execution and rejects a durable task whose Rift changed
 since submission. `repo:` uses the older publishing workflow and is refused for
 these managed checkouts; use a normal Developer Bot request.
 
+For a UI change, attach a screenshot directly in Developer Bot chat and describe
+what you want changed. Kyrex uses the owner's configured Vision Bot to describe
+the visible layout, then sends the description and the original request to the
+Developer Bot in the same repository task. The screenshot stays in Chat's
+private attachment store. Local browser checks can exercise the changed screen
+in different viewport sizes before review.
+
+Ask Developer Bot to check a full GitHub commit SHA after publishing. New GitHub
+reader installations request read access to Checks and Commit statuses. Existing
+installations retain source access. To enable checks on an older installation,
+add those read permissions to the reader GitHub App or recreate the reader with
+the updated setup. Legacy tokens need the equivalent GitHub permissions where
+supported. Kyrex reports unavailable read scopes separately from an empty list
+of checks.
+
 ## Publishing
 
 The reader stays read-only. **Enable PR publishing** opens a separate GitHub App

@@ -51,11 +51,13 @@ def origin(value):
 
 
 class GitHubAppFlow:
+    _OPTIONAL_READER_PERMISSIONS = {"checks", "statuses"}
+
     def __init__(self, path=None, transport=None, post=None, connection=None, *, write=False):
         self.write = write
         self.prefix = PREFIX + ("-write" if write else "")
         self.permissions = ({"contents": "write", "pull_requests": "write", "metadata": "read"}
-                            if write else {"contents": "read", "metadata": "read"})
+                            if write else {"contents": "read", "metadata": "read", "checks": "read", "statuses": "read"})
         self.path = Path(path) if path else connectors.data_dir() / ('github_writer_apps.json' if write else 'github_apps.json')
         self.transport = transport or request
         self.post = post or post_json
@@ -212,12 +214,21 @@ class GitHubAppFlow:
                     raise GitHubError('GitHub returned invalid authorization expiry.') from None
         return payload
 
+    def _matches_permissions(self, permissions):
+        if not isinstance(permissions, dict):
+            return False
+        if self.write:
+            return permissions == self.permissions
+        required = self.permissions.keys() - self._OPTIONAL_READER_PERMISSIONS
+        return required <= permissions.keys() and all(
+            self.permissions.get(name) == value for name, value in permissions.items())
+
     def _installations(self, token, app_id):
         result = self.transport(token, '/user/installations', {'per_page': 100})
         if result.get('total_count', 0) > 100:
             raise GitHubError('Too many GitHub installations. Contact the Kyrex administrator.')
         return [v for v in result.get('installations', []) if v.get('app_id') == app_id and not v.get('suspended_at')
-                and v.get('permissions') == self.permissions]
+                and self._matches_permissions(v.get('permissions'))]
 
     def repositories(self, token, installation_id):
         repos = []

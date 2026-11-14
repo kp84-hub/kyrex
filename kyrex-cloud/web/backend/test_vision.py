@@ -338,3 +338,52 @@ def test_repeated_image_delegations_continue_existing_vision_chat(setup):
     assert conversation['messages'][0]['content'] == 'Earlier image discussion.'
     assert len([m for m in conversation['messages'] if m['role'] == 'assistant']) == 3
     assert len([c for c in chat.list_conversations('alice') if c.get('bot_id') == target['id']]) == 1
+
+
+def test_developer_screenshot_runs_once_in_the_same_conversation(setup, tmp_path, monkeypatch):
+    import subprocess
+    from pathlib import Path
+
+    store, _, _, _, client, calls = setup
+    root = tmp_path / 'developer-repo'
+    subprocess.run(['git', 'init', '-q', str(root)], check=True)
+    bot = _bot('developer', owner='alice', rift=str(root), policy=serve.developer_preset_policy())
+    conv = chat.create_conversation('alice', bot_id=bot['id'])
+    cid = conv['conversation_id']
+    uploaded = client.post(f'/api/conversations/{cid}/images', content=png())
+    assert uploaded.status_code == 200, uploaded.text
+    image = uploaded.json()
+    runner = tmp_path / 'developer_runner.py'
+    runner.write_text('''import json, os, sys
+from pathlib import Path
+root = Path(sys.argv[sys.argv.index('--rift') + 1])
+text = sys.argv[sys.argv.index('--task') + 1]
+assert root.is_dir() and 'Owner request:' in text and 'Make this more modern' in text
+assert 'bright blue eyes' in text and 'untrusted evidence' in text
+assert 'data:image' not in text and 'synthetic-vision-key' not in text
+Path(root, 'layout.css').write_text('.chat { max-width: none; }')
+print('KYREX_RESULT_JSON:' + json.dumps({'mode':'developer','status':'completed',
+    'final_response':'Updated the layout.'}), flush=True)
+''')
+    monkeypatch.setitem(serve.EXECUTORS, 'developer', str(runner))
+
+    async def observe(user, conversation, store, task_id, cancel, **kwargs):
+        yield {'type': 'task', 'task_id': task_id}
+
+    with monkeypatch.context() as observer:
+        observer.setattr(chat, '_stream_existing_bot_task', observe)
+        args = {'image_ids': [image['id']], 'request_id': 'developer-image'}
+        first = asyncio.run(_frames(chat.stream_chat('alice', cid, 'Make this more modern', **args)))
+        second = asyncio.run(_frames(chat.stream_chat('alice', cid, 'Make this more modern', **args)))
+        assert first == second
+        with pytest.raises(chat.ChatUnavailable, match='different message'):
+            asyncio.run(_frames(chat.stream_chat('alice', cid, 'Do something else', **args)))
+        task = store.get(first[0]['task_id'])
+        assert task['executor_prefix'] == 'developer' and task['conversation_id'] == cid
+        assert len(store.tasks_for_conversation(cid, 'alice')) == 1
+        assert not calls and image['id'] in task['task_text'] and 'data:image' not in task['task_text']
+
+    assert task_store.TaskWorker(store, executor=serve.run_task).claim_and_execute_once()
+    assert store.get(task['task_id'])['status'] == 'done', store.get(task['task_id'])
+    assert len(calls) == 1 and (root / 'layout.css').is_file()
+    assert chat.get_conversation('alice', cid)['messages'][0]['images'][0]['id'] == image['id']

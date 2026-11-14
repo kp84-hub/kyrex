@@ -19,7 +19,7 @@ def state(url):
 def setup(tmp_path, monkeypatch):
     monkeypatch.setenv('WEB_SESSION_SECRET', 'github-flow-test')
     calls = []
-    mode = {'login': 'alice', 'permissions': {'contents': 'read', 'metadata': 'read'},
+    mode = {'login': 'alice', 'permissions': {'contents': 'read', 'metadata': 'read', 'checks': 'read', 'statuses': 'read'},
             'installation': 7, 'repos': ['alice/private'], 'app_id': 12}
     def transport(token, path, params=None):
         calls.append((path, params))
@@ -43,7 +43,8 @@ def setup(tmp_path, monkeypatch):
 def register(f):
     url = f.begin('alice', BASE)['authorization_url']
     manifest = f.manifest('alice', state(url), BASE)
-    assert manifest['default_permissions'] == {'contents': 'read', 'metadata': 'read'}
+    assert manifest['default_permissions'] == {'contents': 'read', 'metadata': 'read',
+                                               'checks': 'read', 'statuses': 'read'}
     assert manifest['setup_url'] == BASE + '/api/connections/github/installed'
     return f.registered('alice', state(url), BASE, 'registrationcode')
 
@@ -170,3 +171,12 @@ def test_encryption_missing_prevents_registration(setup, monkeypatch):
     monkeypatch.delenv('KYREX_PROVIDER_SECRETS_KEY', raising=False)
     with pytest.raises(connectors.ConnectorError): f.begin('alice', BASE)
     assert not calls
+
+
+def test_existing_reader_installations_keep_contents_access(setup):
+    flow, _, mode, _ = setup
+    connect(flow)
+    mode['permissions'] = {'contents': 'read', 'metadata': 'read'}
+    assert flow._installations(TOKEN, 12)[0]['id'] == 7
+    mode['permissions']['checks'] = 'write'
+    assert not flow._installations(TOKEN, 12)

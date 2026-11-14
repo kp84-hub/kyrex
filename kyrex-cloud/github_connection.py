@@ -18,6 +18,8 @@ _LOCK = threading.RLock()
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 MAX_BYTES = 256_000
 MAX_CHARS = 40_000
+_CHECK_LIMIT = 25
+_SHA = re.compile(r"[a-fA-F0-9]{40}\Z")
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -43,7 +45,9 @@ def request(token, path, params=None):
         messages = {401: 'GitHub token expired or was revoked. Reconnect in Connections.',
                     403: 'GitHub denied access or rate limited the request. Check token permissions and try later.',
                     404: 'Repository, ref, or path was not found or is not accessible with this token.'}
-        raise GitHubError(messages.get(exc.code, 'GitHub read failed. Try again later.')) from None
+        error = GitHubError(messages.get(exc.code, 'GitHub read failed. Try again later.'))
+        error.http_status = exc.code
+        raise error from None
     except (OSError, ValueError):
         raise GitHubError('GitHub could not be reached or returned an invalid response.') from None
 
@@ -145,8 +149,8 @@ class GitHubConnection:
             raise GitHubError('expected_sha must be the file SHA returned by the previous read.')
         if offset and not expected_sha:
             raise GitHubError('Continue with next_offset and expected_sha from the previous file read.')
-        if action not in ('status', 'repositories', 'contents'):
-            raise GitHubError('Supported GitHub reads: status, repositories, contents.')
+        if action not in ('status', 'repositories', 'contents', 'checks'):
+            raise GitHubError('Supported GitHub reads: status, repositories, contents, checks.')
         if action != 'contents' and (offset or limit != MAX_CHARS or expected_sha):
             raise GitHubError('Pagination is supported only for file contents.')
         if action == 'status':
@@ -167,8 +171,13 @@ class GitHubConnection:
                 token, repos = GitHubAppFlow(connection=self).credentials(owner, live)
         if action == 'repositories':
             return {'repositories': repos, 'read_only': True}
-        if repository.lower() not in [r.lower() for r in repos]:
+        if (not isinstance(repository, str) or not _REPO.fullmatch(repository)
+                or not any(repository.lower() == selected.lower() for selected in repos)):
             raise GitHubError('This repository was not selected in your GitHub connection.')
+        if action == 'checks':
+            if path or not isinstance(ref, str) or not _SHA.fullmatch(ref):
+                raise GitHubError('Check results require the full commit SHA in ref and an empty path.')
+            return self.commit_checks(token, repository, ref.lower())
         if not isinstance(path, str) or len(path) > 1000 or path.startswith('/') or any(p in ('.', '..') for p in path.split('/')) or '\\' in path or any(ord(c) < 32 for c in path):
             raise GitHubError('Use a repository-relative file or directory path.')
         if not isinstance(ref, str) or len(ref) > 200 or any(ord(c) < 32 for c in ref):
@@ -199,4 +208,44 @@ class GitHubConnection:
                 'sha': sha, 'content': content[offset:end], 'truncated': end < len(content),
                 'offset': offset, 'limit': limit, 'total_chars': len(content),
                 'next_offset': end if end < len(content) else None,
+                'untrusted_repository_content': True}
+
+
+    def commit_checks(self, token, repository, sha):
+        """Project check state for one commit without logs, annotations or HTML."""
+        prefix = '/repos/' + repository + '/commits/' + sha
+        params = {'per_page': _CHECK_LIMIT}
+        unavailable = []
+
+        def load(suffix, key, permission):
+            try:
+                data = self.transport(token, prefix + suffix, params)
+            except GitHubError as exc:
+                if getattr(exc, 'http_status', None) not in (403, 404):
+                    raise
+                unavailable.append(permission)
+                return {key: [], 'total_count': 0}
+            if (not isinstance(data, dict) or not isinstance(data.get(key), list)
+                    or type(data.get('total_count')) is not int
+                    or (key == 'statuses' and str(data.get('sha', '')).lower() != sha)):
+                raise GitHubError('GitHub did not return usable check results for this commit.')
+            return data
+
+        checks = load('/check-runs', 'check_runs', 'Checks: read')
+        statuses = load('/status', 'statuses', 'Commit statuses: read')
+
+        def label(value):
+            return ' '.join(value.split())[:120] if isinstance(value, str) else ''
+
+        runs = [{'name': label(row.get('name')), 'status': label(row.get('status')),
+                 'conclusion': label(row.get('conclusion')) or None}
+                for row in checks['check_runs'][:_CHECK_LIMIT]
+                if isinstance(row, dict) and str(row.get('head_sha', '')).lower() == sha]
+        contexts = [{'name': label(row.get('context')), 'state': label(row.get('state'))}
+                    for row in statuses['statuses'][:_CHECK_LIMIT] if isinstance(row, dict)]
+        return {'repository': repository, 'sha': sha,
+                'commit_url': f'https://github.com/{repository}/commit/{sha}',
+                'check_runs': runs, 'status_contexts': contexts,
+                'unavailable_permissions': unavailable,
+                'truncated': (checks['total_count'] > len(runs) or statuses['total_count'] > len(contexts)),
                 'untrusted_repository_content': True}
