@@ -308,10 +308,11 @@ async def upload_chat_image(conversation_id: str, request: Request):
     if not conv:
         raise HTTPException(status_code=404, detail='Conversation not found')
     if not conv.get('bot_id'):
-        raise HTTPException(status_code=400, detail='Choose The Overwatcher or your Vision Bot first.')
+        raise HTTPException(status_code=400, detail='Choose The Overwatcher, Vision Bot, or Developer Bot first.')
     bot = chat_service.resolve_bot_for_user(user, conv['bot_id'])
-    if bot.get('owner') != user or not (vision.eligible(bot) or kyrex_serve.coordinator_granted(bot)):
-        raise HTTPException(status_code=400, detail='Choose The Overwatcher or your Vision Bot first.')
+    if bot.get('owner') != user or not (vision.eligible(bot) or kyrex_serve.coordinator_granted(bot)
+                                       or vision.developer_eligible(bot, user)):
+        raise HTTPException(status_code=400, detail='Choose The Overwatcher, Vision Bot, or Developer Bot first.')
     raw = bytearray()
     async for chunk in request.stream():
         raw.extend(chunk)

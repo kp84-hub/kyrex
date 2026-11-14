@@ -3573,6 +3573,48 @@ async def _stream_writable_bot_task(user, conv, bot, user_content,
             yield frame
 
 
+async def _stream_developer_screenshot(user, conv, bot, text, image_ids, request_id, cancel):
+    """Queue one owner-bound coding task even if the phone reconnects."""
+    import chat_images
+    import vision
+    from task_store import DuplicateTaskId
+
+    conversation_id = conv['conversation_id']
+    try:
+        refs = chat_images.references(user, conversation_id, image_ids)
+    except chat_images.ImageError as exc:
+        raise ChatUnavailable(str(exc)) from None
+    identity = 'turn-' + (request_id or uuid.uuid4().hex) + '-user'
+    task_id = 'dev-image-' + hashlib.sha256(json.dumps([user, conversation_id, identity]).encode()).hexdigest()[:32]
+    store = _task_store()
+    with _bot_conversation_lock(user, 'developer-screenshot:' + conversation_id):
+        current = get_conversation(user, conversation_id)
+        if not current or current.get('bot_id') != bot['id']:
+            raise ChatUnavailable('Reopen your Developer Bot conversation to use this screenshot.')
+        existing = next((m for m in current['messages'] if m.get('id') == identity), None)
+        if existing and (existing.get('content') != text or existing.get('images') != refs):
+            raise ChatUnavailable('This request ID already belongs to a different message.')
+        message = _append_message(user, current, 'user', text, identity=identity)
+        message['images'] = refs
+        _write(user, current)
+        task_text = vision.developer_task_payload(conversation_id, message)
+        try:
+            dev_bot.submit_bot_task(user, bot, task_text,
+                                    store=store, conversation_id=conversation_id, task_id=task_id)
+        except DuplicateTaskId:
+            previous = store.get(task_id) or {}
+            if (previous.get('chat_id'), previous.get('bot_id'), previous.get('conversation_id'),
+                    previous.get('task_text'), previous.get('executor_prefix')) != (
+                    user, bot['id'], conversation_id, task_text, 'developer'):
+                raise ChatUnavailable('This request ID already belongs to a different task.') from None
+        except dev_bot.DevBotError as exc:
+            raise ChatUnavailable(str(exc)) from None
+    async with contextlib.aclosing(_stream_existing_bot_task(
+            user, current, store, task_id, cancel, conversation_id=conversation_id)) as frames:
+        async for frame in frames:
+            yield frame
+
+
 async def _stream_existing_bot_task(user, conv, store, task_id, cancel_event, *, mode=None, conversation_id=None):
     """Observe an accepted task without resubmitting it."""
     import flux as flux_module
@@ -4635,7 +4677,8 @@ async def stream_chat(
     # The specialist sees pixels; the coordinator receives its bounded report.
     import vision
     dedicated_vision = bool(selected_bot and selected_bot.get('owner') == user and vision.eligible(selected_bot))
-    followup = vision.followup_images(conv, user_content, force=dedicated_vision) if not image_ids else []
+    followup = (vision.followup_images(conv, user_content, force=dedicated_vision)
+                if not image_ids and not vision.developer_eligible(selected_bot, user) else [])
     if dedicated_vision and not image_ids and not followup:
         resolve_bot_for_user(user, conv['bot_id'])  # lifecycle remains authoritative
         answer = 'Attach an image, screenshot, or photo and tell me what you would like me to look at.'
@@ -4644,6 +4687,14 @@ async def stream_chat(
         _write(user, conv)
         yield {'type': 'conversation', 'conversation_id': conversation_id}
         yield {'type': 'status', 'status': 'complete', 'content': answer}
+        return
+    if image_ids and not fitness_read_only and vision.developer_eligible(selected_bot, user):
+        bot = resolve_bot_for_user(user, selected_bot['id'])
+        if workspace_id is not _WORKSPACE_UNSET and str(workspace_id or '').strip():
+            raise ChatUnavailable('Use the repository selected in Developer Bot settings.')
+        async for frame in _stream_developer_screenshot(
+                user, conv, bot, user_content, image_ids, request_id, cancel_event):
+            yield frame
         return
     if image_ids or followup:
         async for frame in vision.stream(user, conv, user_content, image_ids or followup,

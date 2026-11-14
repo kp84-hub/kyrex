@@ -34,6 +34,11 @@ def connection(bound, monkeypatch):
         calls.append((path, params))
         if path in ('/repos/owner/private-app', '/repos/owner/empty'):
             return {'full_name': path.removeprefix('/repos/')}
+        if path.endswith('/check-runs'):
+            return {'total_count': 1, 'check_runs': [{'name': 'Build', 'head_sha': '1' * 40,
+                'status': 'completed', 'conclusion': 'success'}]}
+        if path.endswith('/status'):
+            return {'sha': '1' * 40, 'total_count': 0, 'statuses': []}
         if path.endswith('/settings.py'):
             return {'type': 'file', 'encoding': 'base64', 'size': len(text),
                     'sha': '1' * 40, 'content': base64.b64encode(text.encode()).decode()}
@@ -217,6 +222,11 @@ while True:
     if page['next_offset'] is None: break
     offset = page['next_offset']; expected_sha = page['sha']
 answers.append({'paged_content':joined})
+print(json.dumps({'type':'confirm_request','id':'checks','value':'github_read',
+    'action':'checks','repository':'owner/private-app','ref':'1'*40}), flush=True)
+response = json.loads(sys.stdin.readline())
+assert response['approved'], response
+answers.append(response['result'])
 print(json.dumps({'type':'chat_done','content':json.dumps(answers),
     'outcome':'answered','terminal':True}), flush=True)
 sys.stdin.readline()
@@ -227,6 +237,8 @@ from pathlib import Path
 sys.path.insert(0, {str(cloud)!r})
 from headless_agent import HeadlessAgent
 from git_workflow import github_host_read
+print('KYREX_OPERATION:' + json.dumps({{'op':'fs.read','target':'settings.py'}}), flush=True)
+assert sys.stdin.readline().strip() == 'ALLOW'
 agent = HeadlessAgent(Path({str(bridge)!r}), Path({str(root)!r}), python=sys.executable,
     startup_timeout=3, idle_timeout=3, overall_timeout=8,
     surface='Kyrex Chat', host_read=github_host_read)
@@ -249,4 +261,5 @@ print('KYREX_RESULT_JSON:' + json.dumps({{'mode':'developer','status':'no_change
     assert 'cortex-test-model' in answers[3]['content']
     assert answers[4]['entries'] == [], 'An empty repository is valid data, unlike a missing payload'
     assert answers[5]['paged_content'] == answers[3]['content']
+    assert answers[6]['check_runs'] == [{'name': 'Build', 'status': 'completed', 'conclusion': 'success'}]
     assert token not in json.dumps(results) and not list(root.iterdir())
