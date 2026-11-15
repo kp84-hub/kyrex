@@ -89,6 +89,9 @@ def test_contract_survives_store_restart_and_contains_no_send_authority(tmp_path
     dict(preview(), lines=["one"], count=1),
     dict(preview(), mode="level6_delivery"),
     dict(preview(), final_response="Sent to the group"),
+    dict(preview(), preview_state="sent"),
+    dict(preview(), preview_state="title_conflict", message_text="#L6Workout\nWorkout"),
+    dict(preview(), preview_state="ready", message_text="#L6Workout\n "),
     dict(preview(), count=True),
 ])
 def test_worker_rejects_bad_results_even_if_callback_error_is_swallowed(store, bad_result):
@@ -110,9 +113,16 @@ def test_worker_rejects_bad_results_even_if_callback_error_is_swallowed(store, b
     assert not any(e["type"] in {"result", "message", "edit"} for e in store.get_events(task_id))
 
 
-def test_valid_preview_publishes_only_validated_response_and_copies_result(store):
+@pytest.mark.parametrize("fields", [
+    {},
+    {"preview_state": "ready", "message_text": "#L6Workout\nSix workouts",
+     "final_response": "Level 6 workout preview ready to review."},
+    {"preview_state": "title_conflict", "message_text": "",
+     "final_response": "Level 6 workout preview with a source title warning."},
+])
+def test_valid_preview_publishes_only_validated_response_and_copies_result(store, fields):
     task_id = queue(store)
-    result = preview()
+    result = dict(preview(), **fields)
     sent = []
     def executor(**kw):
         kw["send"]("alice", "UNRELATED EMAIL BEFORE RESULT")

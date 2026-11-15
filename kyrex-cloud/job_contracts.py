@@ -267,7 +267,20 @@ def validate_result(contract, result):
                 or any(not isinstance(line, str) or not line.strip() for line in lines)):
             raise JobContractError("The workout job did not return six workout entries.")
         if contract["result_kind"] == "workout_preview":
-            if not result["final_response"].startswith("Preview only — nothing sent."):
+            if "preview_state" not in result:
+                # Older executors identified a preview by its heading.
+                if not result["final_response"].startswith("Preview only — nothing sent."):
+                    raise JobContractError("The workout job did not return a preview response.")
+            elif result["preview_state"] == "title_conflict":
+                if result.get("message_text") != "":
+                    raise JobContractError("A workout preview with conflicting titles cannot include a send draft.")
+            elif result["preview_state"] == "ready":
+                text = result.get("message_text")
+                prefix = "#L6Workout\n"
+                if (not isinstance(text, str) or not text.startswith(prefix)
+                        or not text.removeprefix(prefix).strip()):
+                    raise JobContractError("The workout preview did not include valid workout draft text.")
+            else:
                 raise JobContractError("The workout job did not return a preview response.")
     elif contract["source"] == "calendar":
         if not isinstance(result.get("window"), str) or not result["window"]:

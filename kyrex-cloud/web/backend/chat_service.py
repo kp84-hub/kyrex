@@ -2154,6 +2154,7 @@ def _workout_preview_draft(user, conv, task, result):
             or task.get('conversation_id') != conv.get('conversation_id')
             or task.get('task_text') != serve.LEVEL6_MESSAGE_PREVIEW_REQUEST
             or not isinstance(result, dict) or result.get('mode') != 'level6_preview'
+            or result.get('preview_state', 'ready') != 'ready'
             or result.get('status') != 'no_changes' or result.get('count') != 6):
         return None
     text = result.get('message_text')
