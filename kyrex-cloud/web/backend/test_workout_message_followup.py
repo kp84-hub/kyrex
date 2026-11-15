@@ -37,7 +37,7 @@ def test_other_intents_are_not_workout_followups(text):
 
 
 @pytest.fixture
-def manual(tmp_path, monkeypatch):
+def manual(tmp_path, monkeypatch, request):
     monkeypatch.setenv('KYREX_DATA_DIR', str(tmp_path))
     monkeypatch.setenv('WEB_SESSION_SECRET', 'workout-followup-tests')
     monkeypatch.setenv('KYREX_LEVEL6_PREVIEW_RECIPIENT', 'L6 Besties')
@@ -61,9 +61,14 @@ def manual(tmp_path, monkeypatch):
     tid = tasks.submit('calendar', serve.LEVEL6_MESSAGE_PREVIEW_REQUEST,
         executor_prefix='level6', chat_id='alice', conversation_id=cid, resolve_bot=False)
     body = '#L6Workout\n\n🏋️ Level 6 — Workout Week\nMonday 2026-10-12 — LEG DAY\nTrainer: Coach'
-    tasks.complete(tid, {'mode': 'level6_preview', 'status': 'no_changes', 'count': 6,
+    result = {'mode': 'level6_preview', 'status': 'no_changes', 'count': 6,
         'lines': [f'Day {i} — Workout — trainer: Coach' for i in range(6)],
-        'message_text': body, 'final_response': 'Preview only — nothing sent.\n\n```text\n' + body + '\n```'})
+        'message_text': body, 'final_response': 'Preview only — nothing sent.\n\n```text\n' + body + '\n```'}
+    if getattr(request, 'param', None) == 'title_conflict':
+        body += '\nSaturday 2026-10-17 — Special Workout\nTrainer: Could not verify in Glofox'
+        result.update(preview_state='title_conflict', message_text=body,
+                      final_response='#L6Workout preview\n\n' + body + '\n\nSource differences')
+    tasks.complete(tid, result)
     assert tasks.get(tid)['status'] == 'done'
     monkeypatch.setattr(chat, 'resolve_bot_for_user', lambda *a: {'id': 'calendar', 'owner': 'alice'})
     monkeypatch.setattr(chat, '_resolve_provider', lambda *a, **k: pytest.fail('Follow-up reached provider'))
@@ -93,6 +98,7 @@ def test_manual_preview_gets_draft_and_old_transcript_is_repaired(manual):
     assert chat.get_conversation('bob', cid) is None
 
 
+@pytest.mark.parametrize('manual', ['legacy', 'title_conflict'], indirect=True)
 def test_exact_screenshot_followup_prepares_without_calendar_or_send(manual):
     cid, tid, body, _, queue, token, _ = manual
     frames = turn(cid, 'Send this to L6 Besties')

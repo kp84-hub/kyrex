@@ -158,7 +158,10 @@ def test_workout_preview_from_queue_to_chat(monkeypatch, tmp_path, scenario):
         "trainers": ["coach"],
         "trainers_obj": [{"_id": "coach", "name": "Coach One"}],
     } for day in range(16, 22)]
-    if scenario == "duplicate":
+    if scenario == "title_conflict":
+        events[-1]["trainers"] = []
+        events[-1]["trainers_obj"] = []
+    elif scenario == "duplicate":
         events.append(dict(events[-1], _id="duplicate", name=glofox_api.SCHEDULED_CLASS_NAME))
     monkeypatch.setattr(glofox_api, "_post_guest_login", lambda: "test")
     monkeypatch.setattr(glofox_api, "get_branch", lambda token: None)
@@ -199,7 +202,10 @@ def test_workout_preview_from_queue_to_chat(monkeypatch, tmp_path, scenario):
         assert "Preview only — nothing sent." in reply
         assert message["message_draft"]["text"] == result["message_text"]
     else:
-        assert "Saturday 2026-11-21 — Lung Cancer White Out Workout!\nTrainer: Coach One" in reply
+        saturday_line = "Saturday 2026-11-21 — Lung Cancer White Out Workout!\nTrainer: Could not verify in Glofox"
+        assert saturday_line in reply
         assert "Weekly Six: WHITE OUT FOR LUNG CANCER · Glofox: Lung Cancer White Out Workout!" in reply
-        assert "No send draft was prepared." in reply
-        assert "message_draft" not in message
+        draft = message["message_draft"]["text"]
+        assert draft == result["message_text"]
+        assert saturday_line in draft
+        assert "WHITE OUT FOR LUNG CANCER" not in draft

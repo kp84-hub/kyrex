@@ -90,7 +90,7 @@ def test_contract_survives_store_restart_and_contains_no_send_authority(tmp_path
     dict(preview(), mode="level6_delivery"),
     dict(preview(), final_response="Sent to the group"),
     dict(preview(), preview_state="sent"),
-    dict(preview(), preview_state="title_conflict", message_text="#L6Workout\nWorkout"),
+    dict(preview(), preview_state="title_conflict", message_text="Unstructured text"),
     dict(preview(), preview_state="ready", message_text="#L6Workout\n "),
     dict(preview(), count=True),
 ])
@@ -118,6 +118,8 @@ def test_worker_rejects_bad_results_even_if_callback_error_is_swallowed(store, b
     {"preview_state": "ready", "message_text": "#L6Workout\nSix workouts",
      "final_response": "Level 6 workout preview ready to review."},
     {"preview_state": "title_conflict", "message_text": "",
+     "final_response": "Level 6 workout preview with a source title warning."},
+    {"preview_state": "title_conflict", "message_text": "#L6Workout\nSix workouts",
      "final_response": "Level 6 workout preview with a source title warning."},
 ])
 def test_valid_preview_publishes_only_validated_response_and_copies_result(store, fields):
