@@ -271,11 +271,10 @@ def validate_result(contract, result):
                 # Older executors identified a preview by its heading.
                 if not result["final_response"].startswith("Preview only — nothing sent."):
                     raise JobContractError("The workout job did not return a preview response.")
-            elif result["preview_state"] == "title_conflict":
-                if result.get("message_text") != "":
-                    raise JobContractError("A workout preview with conflicting titles cannot include a send draft.")
-            elif result["preview_state"] == "ready":
+            elif result["preview_state"] in ("ready", "title_conflict"):
                 text = result.get("message_text")
+                if result["preview_state"] == "title_conflict" and text == "":
+                    return  # Older conflict previews did not include a draft.
                 prefix = "#L6Workout\n"
                 if (not isinstance(text, str) or not text.startswith(prefix)
                         or not text.removeprefix(prefix).strip()):

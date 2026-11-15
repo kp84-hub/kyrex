@@ -4208,10 +4208,10 @@ def _run_level6_facebook_message_task(ctx, chat_id, task_text, send,
             outgoing = "\n".join(plain)
         if title_conflicts:
             message = ("#L6Workout preview\n\n"
-                       "Glofox and the Weekly Six post list different class titles. The preview "
-                       "uses the Glofox class and trainer for that slot. Confirm the correct "
-                       "title with Level 6 before sharing. No send draft was prepared.\n\n"
-                       "```text\n" + outgoing + "\n\nSource differences\n"
+                       "The draft uses Glofox’s title for each class flagged below. "
+                       "Review the exact message and recipients before sending.\n\n"
+                       "```text\n" + outgoing + "\n```\n\n"
+                       "**Source differences**\n\n```text\n"
                        + "\n".join(title_conflicts) + "\n```")
         elif preview:
             message = "Preview only — nothing sent.\n\n```text\n" + outgoing + "\n```"
@@ -4238,7 +4238,7 @@ def _run_level6_facebook_message_task(ctx, chat_id, task_text, send,
         result = {"status": "no_changes", "final_response": message,
                   "mode": "level6_preview" if preview else "level6_delivery",
                   "lines": lines, "count": len(lines),
-                  "message_text": outgoing if preview and not title_conflicts else ""}
+                  "message_text": outgoing if preview else ""}
         if preview:
             result["preview_state"] = "title_conflict" if title_conflicts else "ready"
         on_result(result)
