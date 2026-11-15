@@ -561,7 +561,7 @@ def _validate_event_schema(record: object) -> None:
             raise GlofoxSchemaError(f"event missing required key {key!r}")
     if not isinstance(record["_id"], str) or not record["_id"]:
         raise GlofoxSchemaError("event _id invalid")
-    if not isinstance(record["name"], str) or not record["name"]:
+    if not isinstance(record["name"], str) or not record["name"].strip():
         raise GlofoxSchemaError("event name invalid")
     if record["type"] != "event":
         raise GlofoxSchemaError(
@@ -661,6 +661,7 @@ def _week_0830_classes_for_dates(
     *,
     published_workouts: dict[str, str] | None = None,
     allow_unverified_trainers: bool = False,
+    report_title_conflicts: bool = False,
     _guest_login=None,
 ) -> list[dict]:
     """Read the validated 8:30 classes for EXACTLY the trusted week's dates.
@@ -676,8 +677,8 @@ def _week_0830_classes_for_dates(
     row shape as :func:`week_0830_classes`. When the validated post supplies
     titles, a named event must match the published workout for its date.
     Missing or duplicate classes fail the whole request. The preview can
-    opt in to receiving verified classes with null trainer fields when a
-    trainer cannot be resolved.
+    opt in to receiving null trainer fields when a trainer cannot be resolved
+    and a title_conflict marker when the two sources disagree.
 
     The standalone ``glofox: schedule`` command never calls this: it keeps
     :func:`week_0830_classes` and its future-facing window unchanged.
@@ -695,6 +696,7 @@ def _week_0830_classes_for_dates(
     return _resolve_0830_rows(
         events, window_days, trainers, published_workouts=published_workouts,
         allow_unverified_trainers=allow_unverified_trainers,
+        report_title_conflicts=report_title_conflicts,
     )
 
 
@@ -705,6 +707,7 @@ def _resolve_0830_rows(
     *,
     published_workouts: dict[str, str] | None = None,
     allow_unverified_trainers: bool = False,
+    report_title_conflicts: bool = False,
 ) -> list[dict]:
     """Filter to the exact 8:30 slot and join trainers for ONE week.
 
@@ -720,6 +723,7 @@ def _resolve_0830_rows(
         for day, name in (published_workouts or {}).items() if day in window_days
     }
     qualifying: list[tuple[str, dict]] = []
+    title_conflicts: set[str] = set()
     for event in sorted(events, key=lambda e: e["time_start"]):
         start = datetime.fromtimestamp(event["time_start"], BRANCH_TZ)
         if start.hour != SLOT_HOUR or start.minute != SLOT_MINUTE:
@@ -729,10 +733,12 @@ def _resolve_0830_rows(
         published_name = published_names.get(day)
         if (name != SCHEDULED_CLASS_NAME
                 and not (published_name and _workout_title_key(name) == published_name)):
-            raise GlofoxDataError(
-                f"unexpected 8:30 class name on {start:%Y-%m-%d}: "
-                f"{event['name']!r} (event {event['_id']!r})"
-            )
+            if not report_title_conflicts or not published_name:
+                raise GlofoxDataError(
+                    f"unexpected 8:30 class name on {start:%Y-%m-%d}: "
+                    f"{event['name']!r} (event {event['_id']!r})"
+                )
+            title_conflicts.add(event["_id"])
         qualifying.append((day, event))
 
     # Completeness: every Mon-Sat day of the window must have EXACTLY ONE
@@ -821,6 +827,8 @@ def _resolve_0830_rows(
                 "event_id": event["_id"],
             }
         )
+        if event["_id"] in title_conflicts:
+            rows[-1]["title_conflict"] = True
     return rows
 
 

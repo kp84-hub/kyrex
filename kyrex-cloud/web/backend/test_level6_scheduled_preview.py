@@ -202,7 +202,7 @@ def test_sunday_executor_requires_upcoming_six_dates_and_never_sends(monkeypatch
     monkeypatch.setattr(serve, 'build_context', lambda *a: SimpleNamespace(bot_owner='alice', policy=browser['policy']))
     start = date(2026, 10, 12) if upcoming else date(2026, 10, 5)
     lines = [f'Day {(start + timedelta(days=i)).isoformat()} — Workout — trainer: Coach' for i in range(6)]
-    monkeypatch.setattr(weekly, 'run_weekly', lambda **k: lines)
+    monkeypatch.setattr(weekly, 'run_weekly_preview', lambda **k: (lines, []))
     monkeypatch.setattr(glofox_api, '_week_0830_classes_for_dates', lambda *a: [])
     monkeypatch.setattr(serve, 'browser_host_dispatch', lambda *a, **k: pytest.fail('Scheduled preview tried to send'))
     monkeypatch.setenv('KYREX_LEVEL6_SEND_ENABLED', '1')
