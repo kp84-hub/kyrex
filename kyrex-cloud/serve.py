@@ -4168,21 +4168,28 @@ def _run_level6_facebook_message_task(ctx, chat_id, task_text, send,
                 or not is_browser_bot_policy(weekly_ctx.policy)):
             raise weekly.Level6Error("Browser Bot is unavailable")
         lines = []
+        title_conflicts = []
+        preview = task_text == LEVEL6_MESSAGE_PREVIEW_REQUEST
         if task_text == LEVEL6_MESSAGE_TEST_REQUEST:
             # Exact short test payload; the host's normal fixed-destination
             # send, receipt, and policy checks still apply.
             import browser_operator
             outgoing = browser_operator.GOOGLE_MESSAGES_DELIVERY_TEST
         else:
-            lines = weekly.run_weekly(
-                dispatch=lambda text: _level6_browser_dispatch(
-                    weekly_ctx, text, on_progress=on_progress,
-                    task_id=task_id),
-                glofox_read=glofox._week_0830_classes_for_dates,
-                allow_unverified_trainers=task_text == LEVEL6_MESSAGE_PREVIEW_REQUEST)
+            def capture(text):
+                return _level6_browser_dispatch(
+                    weekly_ctx, text, on_progress=on_progress, task_id=task_id)
+
+            if preview:
+                lines, title_conflicts = weekly.run_weekly_preview(
+                    dispatch=capture, glofox_read=glofox._week_0830_classes_for_dates)
+            else:
+                lines = weekly.run_weekly(
+                    dispatch=capture, glofox_read=glofox._week_0830_classes_for_dates,
+                    allow_unverified_trainers=False)
             if len(lines) != 6:
                 raise weekly.Level6Error("the weekly post did not yield six workout days")
-            if task_text == LEVEL6_MESSAGE_PREVIEW_REQUEST:
+            if preview:
                 import level6_message_schedule
                 scheduled_week = level6_message_schedule.expected_week(task_id, owner)
                 if scheduled_week:
@@ -4199,14 +4206,21 @@ def _run_level6_facebook_message_task(ctx, chat_id, task_text, send,
                 summary, trainer = line.rsplit(" — trainer: ", 1)
                 plain.extend([summary, f"Trainer: {trainer}"])
             outgoing = "\n".join(plain)
-        spec = json.dumps({
-            "google_messages_level6": True,
-            "url": "https://messages.google.com/web/",
-            "message": outgoing,
-        }, ensure_ascii=False, separators=(",", ":"))
-        if task_text == LEVEL6_MESSAGE_PREVIEW_REQUEST:
+        if title_conflicts:
+            message = ("#L6Workout preview\n\n"
+                       "Glofox and the Weekly Six post list different class titles. The preview "
+                       "uses the Glofox class and trainer for that slot. Confirm the correct "
+                       "title with Level 6 before sharing. No send draft was prepared.\n\n"
+                       "```text\n" + outgoing + "\n\nSource differences\n"
+                       + "\n".join(title_conflicts) + "\n```")
+        elif preview:
             message = "Preview only — nothing sent.\n\n```text\n" + outgoing + "\n```"
         else:
+            spec = json.dumps({
+                "google_messages_level6": True,
+                "url": "https://messages.google.com/web/",
+                "message": outgoing,
+            }, ensure_ascii=False, separators=(",", ":"))
             result, error = browser_host_dispatch(
                 ctx, spec, on_progress=on_progress,
                 task_id=task_id,
@@ -4222,9 +4236,9 @@ def _run_level6_facebook_message_task(ctx, chat_id, task_text, send,
         return
     if on_result is not None:
         on_result({"status": "no_changes", "final_response": message,
-                   "mode": "level6_preview" if task_text == LEVEL6_MESSAGE_PREVIEW_REQUEST else "level6_delivery",
+                   "mode": "level6_preview" if preview else "level6_delivery",
                    "lines": lines, "count": len(lines),
-                   "message_text": outgoing if task_text == LEVEL6_MESSAGE_PREVIEW_REQUEST else ""})
+                   "message_text": outgoing if preview and not title_conflicts else ""})
     send(chat_id, message)
 
 

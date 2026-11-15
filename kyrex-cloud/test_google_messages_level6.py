@@ -266,13 +266,12 @@ class GoogleMessagesLevel6Tests(unittest.TestCase):
               patch("bots.get_bot", side_effect=bots.__getitem__),
               patch.object(hosts, "binding_for", return_value="host-1"),
               patch.object(serve, "build_context", return_value=weekly_ctx),
-              patch.object(level6_weekly, "run_weekly", return_value=lines) as read,
+              patch.object(level6_weekly, "run_weekly_preview", return_value=(lines, [])) as read,
               patch.object(serve, "browser_host_dispatch") as send):
             serve._run_level6_facebook_message_task(
                 calendar_ctx, "alice", serve.LEVEL6_MESSAGE_PREVIEW_REQUEST,
                 lambda owner, text: messages.append(text))
         read.assert_called_once()
-        self.assertTrue(read.call_args.kwargs["allow_unverified_trainers"])
         send.assert_not_called()
         self.assertIn("Preview only — nothing sent", messages[0])
         self.assertIn("Workout 21", messages[0])

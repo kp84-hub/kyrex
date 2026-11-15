@@ -535,8 +535,11 @@ def join_week(six: WeeklySix, glofox_rows, *, allow_unverified_trainers=False) -
             raise Level6Error(
                 f"the Glofox class on {entry.iso} has no resolvable trainer"
             )
+        workout = entry.workout
+        if row.get("title_conflict"):
+            workout = _preview_title(row["class_name"])
         lines.append(
-            f"{entry.weekday} {entry.iso} — {entry.workout} — "
+            f"{entry.weekday} {entry.iso} — {workout} — "
             f"trainer: {trainer or 'Could not verify in Glofox'}"
         )
     return lines
@@ -560,6 +563,33 @@ def run_weekly(*, dispatch, glofox_read, today=None, allow_unverified_trainers=F
     is an optional reference calendar day for the plausibility gate
     (production passes ``None`` → the current America/New_York date).
     """
+    six, rows = _read_weekly_sources(
+        dispatch=dispatch, glofox_read=glofox_read, today=today,
+        allow_unverified_trainers=allow_unverified_trainers)
+    return join_week(six, rows, allow_unverified_trainers=allow_unverified_trainers)
+
+
+def _preview_title(title: str) -> str:
+    return " ".join(title.split())[:180]
+
+
+def run_weekly_preview(*, dispatch, glofox_read, today=None) -> tuple[list[str], list[str]]:
+    """Show Glofox's class and trainer, and report conflicting post labels."""
+    six, rows = _read_weekly_sources(
+        dispatch=dispatch, glofox_read=glofox_read, today=today,
+        allow_unverified_trainers=True, report_title_conflicts=True)
+    lines = join_week(six, rows, allow_unverified_trainers=True)
+    titles = {entry.iso: entry.workout for entry in six.days}
+    conflicts = [
+        f"{row['date']} · Weekly Six: {_preview_title(titles[row['date']])} · "
+        f"Glofox: {_preview_title(row['class_name'])}"
+        for row in rows if row.get("title_conflict")
+    ]
+    return lines, conflicts
+
+
+def _read_weekly_sources(*, dispatch, glofox_read, today, allow_unverified_trainers,
+                         report_title_conflicts=False):
     result, error = dispatch(weekly_browser_task_spec())
     if error:
         raise Level6Error(f"browser capture failed: {error}")
@@ -616,8 +646,10 @@ def run_weekly(*, dispatch, glofox_read, today=None, allow_unverified_trainers=F
     # suffix, or any other caller input.
     assert_plausible_week(six, today=today)
     published_workouts = {entry.iso: entry.workout for entry in six.days}
+    preview_options = {"report_title_conflicts": True} if report_title_conflicts else {}
     rows = glofox_read(
         list(published_workouts), published_workouts=published_workouts,
         allow_unverified_trainers=allow_unverified_trainers,
+        **preview_options,
     )
-    return join_week(six, rows, allow_unverified_trainers=allow_unverified_trainers)
+    return six, rows
