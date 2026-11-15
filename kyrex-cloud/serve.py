@@ -4235,10 +4235,13 @@ def _run_level6_facebook_message_task(ctx, chat_id, task_text, send,
         unavailable(f"{type(exc).__name__}: {exc}")
         return
     if on_result is not None:
-        on_result({"status": "no_changes", "final_response": message,
-                   "mode": "level6_preview" if preview else "level6_delivery",
-                   "lines": lines, "count": len(lines),
-                   "message_text": outgoing if preview and not title_conflicts else ""})
+        result = {"status": "no_changes", "final_response": message,
+                  "mode": "level6_preview" if preview else "level6_delivery",
+                  "lines": lines, "count": len(lines),
+                  "message_text": outgoing if preview and not title_conflicts else ""}
+        if preview:
+            result["preview_state"] = "title_conflict" if title_conflicts else "ready"
+        on_result(result)
     send(chat_id, message)
 
 

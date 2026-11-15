@@ -116,18 +116,20 @@ def test_target_selection_rejects_foreign_stopped_missing_and_ambiguous(monkeypa
 
 
 @pytest.mark.parametrize("scenario", ["matched", "title_conflict", "duplicate", "strict_send"])
-def test_preview_executor_reads_six_days_and_never_dispatches_messages(monkeypatch, scenario):
+def test_workout_preview_from_queue_to_chat(monkeypatch, tmp_path, scenario):
     import bots
     import browser_hosts
+    import chat_service as chat
     import level6_weekly as weekly
     import glofox_api
+    from task_store import CloudTaskStore, TaskWorker
     calendar = bot("calendar", serve.CALENDAR_PRESET)
     browser = bot(weekly.BROWSER_BOT_ID, serve.BROWSER_PRESET)
     registry = {calendar["id"]: calendar, browser["id"]: browser}
     monkeypatch.setattr(bots, "get_bot", registry.get)
     monkeypatch.setattr(browser_hosts, "binding_for", lambda *a: "same-host")
-    monkeypatch.setattr(serve, "build_context", lambda *a: SimpleNamespace(
-        bot_owner="alice", policy=browser["policy"]))
+    monkeypatch.setattr(serve, "build_context", lambda bot_id, *a, **k: serve.ExecutionContext(
+        session_id=bot_id, bot_id=bot_id, bot_owner="alice", policy=registry[bot_id]["policy"]))
     saturday = ("WHITE OUT FOR LUNG CANCER" if scenario != "matched"
                 else "LUNG CANCER WHITE OUT WORKOUT")
     ocr = "\n".join([
@@ -164,35 +166,40 @@ def test_preview_executor_reads_six_days_and_never_dispatches_messages(monkeypat
     monkeypatch.setattr(glofox_api, "get_trainers", lambda token: {"coach": "Coach One"})
     monkeypatch.setattr(serve, "browser_host_dispatch", lambda *a, **k: pytest.fail("Preview dispatched a send"))
     monkeypatch.setenv("KYREX_LEVEL6_SEND_ENABLED", "1")
-    results, replies = [], []
-    ctx = SimpleNamespace(bot_owner="alice", bot_id="calendar", policy=calendar["policy"])
-    command = (serve.LEVEL6_MESSAGE_REQUEST if scenario == "strict_send"
-               else serve.LEVEL6_MESSAGE_PREVIEW_REQUEST)
-    serve._run_level6_facebook_message_task(
-        ctx, "chat", command,
-        lambda cid, text: replies.append(text), on_result=results.append)
+    store = CloudTaskStore(tmp_path / "tasks.db")
+    monkeypatch.setattr(chat, "_task_store", lambda: store)
+    monkeypatch.setattr(chat, "_chat_root", lambda: tmp_path)
+    monkeypatch.setattr(chat, "resolve_bot_for_user", lambda owner, bot_id: registry[bot_id])
+    cid = chat.create_conversation("alice", bot_id="calendar")["conversation_id"]
+    command = (serve.LEVEL6_MESSAGE_TASK_TEXT if scenario == "strict_send"
+               else serve.LEVEL6_MESSAGE_PREVIEW_TASK_TEXT)
+    task_id = chat.dev_bot.submit_level6_message_task("alice", calendar, command, store, cid)
+    worker = TaskWorker(store, executor=serve.run_task)
+    worker.execute_task(store.claim_next("level6-test"))
+    task = store.get(task_id)
+    result = task["result"]
+    message = chat.get_conversation("alice", cid)["messages"][-1]
+    reply = message["content"]
+    assert store.pending_approvals_for_task(task_id) == []
     if scenario == "strict_send":
-        assert not results
-        assert "unexpected 8:30 class name" in replies[0]
+        assert task["status"] == "failed"
+        assert "unexpected 8:30 class name" in reply
         return
-    assert results[0]["mode"] == "level6_preview"
     if scenario == "duplicate":
-        assert results[0]["status"] == "error"
-        assert "duplicate 8:30" in replies[0]
-        assert not results[0].get("message_text")
+        assert task["status"] == "failed"
+        assert "duplicate 8:30" in reply
+        assert "message_draft" not in message
         return
-    assert results[0]["count"] == 6
-    assert "Monday 2026-11-16 — Back Squat" in replies[0]
+    assert task["status"] == "done", task["error"]
+    assert result["mode"] == "level6_preview"
+    assert result["count"] == 6
+    assert "Monday 2026-11-16 — Back Squat" in reply
     if scenario == "matched":
-        assert "Saturday 2026-11-21 — LUNG CANCER WHITE OUT WORKOUT\nTrainer: Coach One" in replies[0]
-        assert replies[0].startswith("Preview only — nothing sent.")
-        assert results[0]["message_text"].startswith("#L6Workout\n")
+        assert "Saturday 2026-11-21 — LUNG CANCER WHITE OUT WORKOUT\nTrainer: Coach One" in reply
+        assert "Preview only — nothing sent." in reply
+        assert message["message_draft"]["text"] == result["message_text"]
     else:
-        assert "Saturday 2026-11-21 — Lung Cancer White Out Workout!\nTrainer: Coach One" in replies[0]
-        assert "Weekly Six: WHITE OUT FOR LUNG CANCER · Glofox: Lung Cancer White Out Workout!" in replies[0]
-        assert "No send draft was prepared." in replies[0]
-        assert not results[0]["message_text"]
-        import chat_service
-        task = {"status": "done", "executor_prefix": "level6", "chat_id": "alice",
-                "conversation_id": "chat", "task_text": serve.LEVEL6_MESSAGE_PREVIEW_REQUEST}
-        assert chat_service._workout_preview_draft("alice", {"conversation_id": "chat"}, task, results[0]) is None
+        assert "Saturday 2026-11-21 — Lung Cancer White Out Workout!\nTrainer: Coach One" in reply
+        assert "Weekly Six: WHITE OUT FOR LUNG CANCER · Glofox: Lung Cancer White Out Workout!" in reply
+        assert "No send draft was prepared." in reply
+        assert "message_draft" not in message
