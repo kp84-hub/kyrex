@@ -1,5 +1,6 @@
 """Natural workout previews stay on the fixed read-only preview workflow."""
 import asyncio
+from datetime import date, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -126,9 +127,36 @@ def test_preview_executor_reads_six_days_and_never_dispatches_messages(monkeypat
     monkeypatch.setattr(browser_hosts, "binding_for", lambda *a: "same-host")
     monkeypatch.setattr(serve, "build_context", lambda *a: SimpleNamespace(
         bot_owner="alice", policy=browser["policy"]))
-    lines = [f"Day {i} workout — trainer: Coach {i}" for i in range(6)]
-    monkeypatch.setattr(weekly, "run_weekly", lambda **k: lines)
-    monkeypatch.setattr(glofox_api, "_week_0830_classes_for_dates", lambda *a: [])
+    ocr = "\n".join([
+        "Level 6 Training",
+        "THE WEEKLY SIX",
+        "WEEK OF 11.16.26",
+        "MONDAY 11.16 Back Squat",
+        "TUESDAY 11.17 Front Squat",
+        "WEDNESDAY 11.18 Deadlift",
+        "THURSDAY 11.19 Bench Press",
+        "FRIDAY 11.20 Clean & Jerk",
+        "SATURDAY 11.21 LUNG CANCER WHITE OUT WORKOUT",
+    ])
+    monkeypatch.setattr(serve, "_level6_browser_dispatch", lambda *a, **k: ({
+        "status": "no_changes",
+        "level6_weekly": {"ocr_text": ocr},
+    }, None))
+    assert_week = weekly.assert_plausible_week
+    monkeypatch.setattr(weekly, "assert_plausible_week",
+                        lambda plan, today: assert_week(plan, today=date(2026, 11, 15)))
+    events = [{
+        "_id": f"event-{day}",
+        "name": (glofox_api.SCHEDULED_CLASS_NAME if day < 21
+                 else "Lung Cancer White Out Workout!"),
+        "time_start": int(datetime(2026, 11, day, 8, 30, tzinfo=glofox_api.BRANCH_TZ).timestamp()),
+        "trainers": ["coach"],
+        "trainers_obj": [{"_id": "coach", "name": "Coach One"}],
+    } for day in range(16, 22)]
+    monkeypatch.setattr(glofox_api, "_post_guest_login", lambda: "test")
+    monkeypatch.setattr(glofox_api, "get_branch", lambda token: None)
+    monkeypatch.setattr(glofox_api, "_query_week_events", lambda *a: events)
+    monkeypatch.setattr(glofox_api, "get_trainers", lambda token: {"coach": "Coach One"})
     monkeypatch.setattr(serve, "browser_host_dispatch", lambda *a, **k: pytest.fail("Preview dispatched a send"))
     monkeypatch.setenv("KYREX_LEVEL6_SEND_ENABLED", "0")
     results, replies = [], []
@@ -138,5 +166,5 @@ def test_preview_executor_reads_six_days_and_never_dispatches_messages(monkeypat
         lambda cid, text: replies.append(text), on_result=results.append)
     assert results[0]["mode"] == "level6_preview"
     assert results[0]["count"] == 6
-    assert "Day 5 workout" in replies[0]
+    assert "Saturday 2026-11-21 — LUNG CANCER WHITE OUT WORKOUT\nTrainer: Coach One" in replies[0]
     assert replies[0].startswith("Preview only — nothing sent.")

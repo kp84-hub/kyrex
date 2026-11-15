@@ -475,10 +475,10 @@ def test_trusted_week_read():
           str([r["date"] for r in rows]))
 
     special = _trusted_week_fixture()
-    special_name = "Pancreatic Cancer Awareness Workout"
+    special_name = "Lung Cancer White Out Workout!"
     special["data"][-1]["name"] = special_name
     saturday = TRUSTED_0914[-1]
-    published_name = "PANCREATIC CANCER AWARENESS  WORKOUT"
+    published_name = "LUNG CANCER WHITE OUT  WORKOUT"
     patcher, _ = capture_calls(routes_for(GOOD_BRANCH, GOOD_STAFF, special))
     with patcher:
         rows = glofox_api._week_0830_classes_for_dates(
@@ -487,7 +487,12 @@ def test_trusted_week_read():
           len(rows) == 6 and rows[-1]["class_name"] == special_name
           and rows[-1]["trainer_name"] == "Staff Level 6")
 
-    for published in (None, {saturday: "Other Workout"}, {TRUSTED_0914[0]: published_name}):
+    for published in (
+        None,
+        {saturday: "LUNG CANCER WHITE OUT WALK"},
+        {saturday: "LUNG CANCER WHITE-OUT WORKOUT"},
+        {TRUSTED_0914[0]: published_name},
+    ):
         patcher, _ = capture_calls(routes_for(GOOD_BRANCH, GOOD_STAFF, special))
         with patcher:
             try:

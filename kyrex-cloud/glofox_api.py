@@ -44,6 +44,7 @@ reconnaissance — see test_glofox_api.py for the pinned evidence):
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
 import urllib.request
 from datetime import date, datetime, time, timedelta
@@ -91,6 +92,9 @@ _STAFF_URL = f"{API_BASE}/staff?type=TRAINER&sort_by=first_name"
 #: The default Level 6 class name. A validated Weekly Six post can also
 #: identify a named workout for the same date.
 SCHEDULED_CLASS_NAME = "Group Fitness Class"
+
+# Weekly Six artwork can omit sentence-ending punctuation shown in Glofox.
+_TITLE_END_PUNCTUATION = re.compile(r"[\s.!?…。！？]+$")
 
 #: Pinned request headers observed during the reconnaissance.  The API
 #: 403s requests without an app-origin header; these are constants, not a
@@ -712,7 +716,7 @@ def _resolve_0830_rows(
     trimmed, and a missing expected day fails the whole request closed.
     """
     published_names = {
-        day: " ".join(name.split()).casefold()
+        day: _workout_title_key(name)
         for day, name in (published_workouts or {}).items() if day in window_days
     }
     qualifying: list[tuple[str, dict]] = []
@@ -722,8 +726,9 @@ def _resolve_0830_rows(
             continue
         day = start.date().isoformat()
         name = event["name"]
+        published_name = published_names.get(day)
         if (name != SCHEDULED_CLASS_NAME
-                and " ".join(name.split()).casefold() != published_names.get(day)):
+                and not (published_name and _workout_title_key(name) == published_name)):
             raise GlofoxDataError(
                 f"unexpected 8:30 class name on {start:%Y-%m-%d}: "
                 f"{event['name']!r} (event {event['_id']!r})"
@@ -817,6 +822,11 @@ def _resolve_0830_rows(
             }
         )
     return rows
+
+
+def _workout_title_key(name: str) -> str:
+    """Compare title text without case, spacing or trailing punctuation."""
+    return _TITLE_END_PUNCTUATION.sub("", " ".join(name.split()).casefold())
 
 
 def _expected_window_dates(
