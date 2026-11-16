@@ -263,7 +263,12 @@ def test_worker_review_exact_gate_revalidation_and_unknown_nonreplay(f, monkeypa
     assert not thread.is_alive()
     assert len(f.writes) == (1 if change in {'approve','unknown'} else 0)
     saved = f.store.view('alice',identity)
-    if change == 'approve': assert saved['state'] == 'added'
+    result = f.tasks.get(task['task_id'])['result']
+    if change == 'approve':
+        assert saved['state'] == 'added'
+        assert result['event_id'] == f.writes[0]['id']
+    else:
+        assert not (result or {}).get('event_id')
     if change == 'deny':
         assert saved['state'] == 'dismissed'
         assert f.store.rows('alice', active_only=True) == []

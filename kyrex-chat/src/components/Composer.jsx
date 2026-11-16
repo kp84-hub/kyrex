@@ -1,7 +1,7 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { currentLocation, isLocationRequest } from '../lib/location';
 
-export default function Composer({ compact = false, conversationId, onSend, onStop, isGenerating, isConversationReady = true, providers = [], activeProvider, activeModel, activeBotId, onChangeProvider, workspaces = [], activeWorkspaceId = null, onAttachWorkspace }) {
+export default function Composer({ compact = false, conversationId, onSend, onStop, isGenerating, isConversationReady = true, providers = [], activeProvider, activeModel, activeBotId, onChangeProvider, workspaces = [], activeWorkspaceId = null, onAttachWorkspace, voiceAnchorRef }) {
   const [text, setText] = useState('');
   const [images, setImages] = useState([]);
   const [imageError, setImageError] = useState('');
@@ -253,6 +253,7 @@ export default function Composer({ compact = false, conversationId, onSend, onSt
           }}
           aria-busy={isGenerating}
         />
+        {voiceAnchorRef && <div ref={voiceAnchorRef} />}
         {isGenerating ? (
           <button type="button" className="send-btn stop" onClick={onStop} aria-label="Stop generating" title="Stop generating">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">

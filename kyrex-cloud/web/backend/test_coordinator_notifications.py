@@ -116,10 +116,8 @@ def test_superseded_review_disappears_from_overwatcher_and_notification_inbox(f)
     f.tasks.persist_approval_request(tid, 'alice-session', 'review', 2, 'token', 'Review', '')
     f.service.tick(); assert len(f.project()['messages']) == 1
     f.tasks.set_status(tid, 'done'); f.service.tick()
-    rows = f.store.list('alice')['notifications']
-    assert len(rows) == 1 and rows[0]['kind'] == 'done'
-    assert len(f.project()['messages']) == 1
-    assert f.project()['messages'][0]['coordinator_notification']['kind'] == 'done'
+    assert f.store.list('alice')['notifications'] == []
+    assert f.project()['messages'] == []
 
 
 def test_read_history_tests_and_already_coordinator_results_do_not_create_chat_noise(f):

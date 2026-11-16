@@ -7,7 +7,6 @@ export default function ChatHeader({
   activeBotId = null,
   isWorking = false,
   onSelectBot,
-  voiceControls,
   notificationControls,
   developerWorkspace,
   onReviewDeveloperChanges,
@@ -28,7 +27,6 @@ export default function ChatHeader({
       <div className="chat-header-right">
         <BotPicker bots={bots} activeBotId={activeBotId} onSelectBot={onSelectBot} isWorking={isWorking} />
         {notificationControls}
-        {voiceControls}
       </div>
       {developerWorkspace && <div className="developer-workspace-context" aria-label="Developer workspace">
         <strong title={developerWorkspace.repository || undefined}>{developerWorkspace.repository || 'Original workspace'}</strong>

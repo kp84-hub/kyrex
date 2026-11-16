@@ -54,7 +54,19 @@ export default function NotificationCenter({ onOpenConversation, compact = false
   useEffect(() => {
     alive.current = true;
     let timer, cancelled = false;
+    let tab, presenceSequence = 0;
+    const reportPresence = (visible = !document.hidden && document.hasFocus()) => {
+      if (!visible && !tab) return;
+      tab ||= crypto.randomUUID().replaceAll('-', '');
+      fetch('/api/notifications/presence', { method: 'POST', credentials: 'same-origin', keepalive: true,
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tab, sequence: ++presenceSequence, visible })
+      }).catch(() => {}); // A missed update expires on the server.
+      if (!visible) tab = undefined;
+    };
+    const showPresence = () => reportPresence();
+    const hidePresence = () => reportPresence(false);
     const poll = async () => {
+      reportPresence();
       if (!cancelled && !document.hidden) await load();
       if (!cancelled) timer = setTimeout(poll, 20000);
     };
@@ -62,11 +74,18 @@ export default function NotificationCenter({ onOpenConversation, compact = false
     const refresh = () => { if (!document.hidden) load(); };
     const pushed = event => { if (event.data?.type === 'kyrex-notifications') refresh(); };
     window.addEventListener('focus', refresh); document.addEventListener('visibilitychange', refresh);
+    window.addEventListener('focus', showPresence); window.addEventListener('blur', hidePresence);
+    window.addEventListener('pageshow', showPresence); window.addEventListener('pagehide', hidePresence);
+    document.addEventListener('visibilitychange', showPresence);
     window.addEventListener('kyrex-notifications-changed', refresh);
     navigator.serviceWorker?.addEventListener?.('message', pushed);
     return () => {
       cancelled = true; alive.current = false; ++sequence.current; clearTimeout(timer);
+      hidePresence();
       window.removeEventListener('focus', refresh); document.removeEventListener('visibilitychange', refresh);
+      window.removeEventListener('focus', showPresence); window.removeEventListener('blur', hidePresence);
+      window.removeEventListener('pageshow', showPresence); window.removeEventListener('pagehide', hidePresence);
+      document.removeEventListener('visibilitychange', showPresence);
       window.removeEventListener('kyrex-notifications-changed', refresh);
       navigator.serviceWorker?.removeEventListener?.('message', pushed);
     };

@@ -1,6 +1,8 @@
 .voice-controls { position: relative; flex: 0 0 auto; font-size: 13px; }
 .voice-controls button, .voice-surface button { min-height: 44px; border: 1px solid var(--border); border-radius: 14px; padding: 10px 16px; background: transparent; color: inherit; font: inherit; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 9px; }
 .voice-controls .voice-trigger { display: flex; align-items: center; justify-content: center; gap: 7px; border-color: transparent; padding: 8px; }
+.composer-entry-row .voice-trigger { width: 44px; border-radius: 50%; }
+.composer-entry-row .voice-trigger > span { display: none; }
 .voice-trigger.is-active { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .voice-controls button:hover:not(:disabled), .voice-surface button:hover:not(:disabled) { background: var(--bg-hover); }
 .voice-controls button:focus-visible, .voice-surface button:focus-visible, .composer-model-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }

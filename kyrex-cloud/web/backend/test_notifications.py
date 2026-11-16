@@ -118,10 +118,11 @@ def setup(tmp_path, monkeypatch):
     monkeypatch.setattr(api, 'session_owner', sessions.owner_for_reference)
     app = FastAPI(); app.include_router(api.router)
     client = TestClient(app, base_url='https://chat.example.test', cookies={'session': 'alice-cookie'})
-    def task(user='alice', cid=None, bot=None):
-        return tasks.submit(user + '-session', 'Inspect a saved result', chat_id=user,
+    def task(user='alice', cid=None, bot=None, executor='repo', task_id=None, text='Inspect a saved result'):
+        return tasks.submit(user + '-session', text, chat_id=user,
             bot_id=bot or ('bot-a' if user == 'alice' else 'bot-b'),
-            conversation_id=cid or ('a'*32 if user == 'alice' else 'b'*32), resolve_bot=False)
+            conversation_id=cid or ('a'*32 if user == 'alice' else 'b'*32),
+            executor_prefix=executor, task_id=task_id, resolve_bot=False)
     return SimpleNamespace(tasks=tasks, store=notifications, sessions=sessions, chat=chat,
                            registry=registry, service=service, client=client, task=task, sent=sent)
 
@@ -133,14 +134,18 @@ def enroll(f, user='alice', identity='c'*32, suffix='fixture'):
     return value
 
 
-def test_saved_task_results_inbox_owner_isolation_read_and_replay(setup):
+def finish_calendar(f, task_id, **extra):
+    f.tasks.set_status(task_id, 'done', result=json.dumps({'status': 'ok', 'event_id': 'created-event'}), **extra)
+
+
+def test_calendar_additions_inbox_owner_isolation_read_and_replay(setup):
     f = setup; enroll(f)
-    a, b = f.task(), f.task('bob')
-    f.tasks.set_status(a, 'done'); f.tasks.set_status(b, 'failed')
+    a, b = f.task(executor='cal_write'), f.task('bob', executor='cal_write')
+    finish_calendar(f, a); finish_calendar(f, b)
     f.service.tick()
     rows = f.store.list('alice'); assert rows['unread'] == 1
     item = rows['notifications'][0]
-    assert item['conversation'] == 'a'*32 and item['title'] == 'Alice Bot · Task finished'
+    assert item['conversation'] == 'a'*32 and item['title'] == 'Alice Bot · Calendar event added'
     assert len(f.sent) == 1 and f.sent[0][1] == item['id']
     assert f.store.list('bob')['unread'] == 1
     assert f.client.get('/api/notifications/' + f.store.list('bob')['notifications'][0]['id']).status_code == 404
@@ -152,17 +157,81 @@ def test_saved_task_results_inbox_owner_isolation_read_and_replay(setup):
     assert len(f.store.list('alice')['notifications']) == 1
 
 
+def test_calendar_completion_uses_focused_chat_at_finish_and_ignores_stale_presence(setup):
+    f = setup; enroll(f)
+    endpoint = '/api/notifications/presence'
+    tab = 'e' * 32
+    def report(visible, sequence, device=tab):
+        return f.client.post(endpoint, json={'tab': device, 'sequence': sequence, 'visible': visible})
+    assert report(True, 1).status_code == 200
+    finish_calendar(f, f.task(executor='cal_write'))
+    assert report(False, 3).status_code == 200
+    assert report(True, 2).status_code == 200  # A delayed heartbeat cannot reopen the tab.
+    f.service.tick()
+    assert not f.sent and f.store.list('alice')['unread'] == 0
+    finish_calendar(f, f.task(executor='cal_write'))
+    assert report(True, 4, 'f' * 32).status_code == 200  # Returned after the write.
+    f.service.tick()
+    assert len(f.sent) == f.store.list('alice')['unread'] == 1
+    assert f.client.post(endpoint, json={'tab': tab, 'sequence': 6, 'visible': True},
+                         headers={'Sec-Fetch-Site': 'cross-site'}).status_code == 403
+    f.client.cookies.clear()
+    assert report(True, 6).status_code == 401
+
+
+def test_routine_task_updates_and_unconfirmed_calendar_writes_do_not_notify(setup):
+    f = setup; enroll(f)
+    for status in ('done', 'failed', 'cancelled'):
+        f.tasks.set_status(f.task(), status)
+    for executor, result in [('cal_write', {'status': 'needs_details'}),
+                             ('email_calendar', {'status': 'no_changes', 'count': 0}),
+                             ('event_calendar', {'status': 'no_changes', 'count': 0}),
+                             ('cal_edit', {'status': 'ok', 'event_id': 'existing'})]:
+        f.tasks.set_status(f.task(executor=executor), 'done', result=json.dumps(result))
+    f.service.tick()
+    assert f.store.list('alice')['notifications'] == [] and not f.sent
+
+
+def test_calendar_workflows_report_confirmed_additions(setup):
+    from serve import LEVEL6_CALENDAR_BATCH_REQUEST, LEVEL6_MESSAGE_PREVIEW_REQUEST
+    f = setup
+    for executor, text, result in [('email_calendar', 'fixture', {'count': 1}),
+                                   ('event_calendar', 'fixture', {'event_id': 'created'}),
+                                   ('level6', LEVEL6_CALENDAR_BATCH_REQUEST, {'count': 3}),
+                                   ('level6', LEVEL6_MESSAGE_PREVIEW_REQUEST, {'count': 6})]:
+        task = f.task(executor=executor, text=text)
+        f.tasks.set_status(task, 'done', result=json.dumps({'status': 'no_changes', **result}))
+    f.service.tick()
+    titles = [row['title'].split(' · ')[-1] for row in f.store.list('alice')['notifications']]
+    assert sorted(titles) == ['Calendar event added', 'Calendar event added', 'Calendar events added']
+
+
+def test_startup_retires_old_task_noise_preserving_explicit_alerts(setup):
+    from level6_message_schedule import preview_task_id
+    f = setup; enroll(f)
+    scheduled = 'task:' + preview_task_id('alice', '2026-11-16') + ':done'
+    keep = [f.store.record('alice', scheduled, 'done', 'Scheduled preview'),
+            f.store.record('alice', 'trainer:change', 'automation', 'Trainer schedule updated'),
+            f.store.record('alice', 'task:review:awaiting_approval:one', 'awaiting_approval', 'Review')]
+    obsolete = f.store.record('alice', 'task:chat:done', 'done', 'Task finished')
+    api.NotificationService(f.tasks, f.chat, store=f.store)
+    assert {item['id'] for item in f.store.list('alice')['notifications']} == set(keep)
+    assert f.store.resolved('alice', obsolete)
+    with f.store.db() as db:
+        assert {row[0] for row in db.execute('SELECT notification FROM deliveries')} == set(keep)
+
+
 def test_projection_uses_saved_owner_and_conversation_not_event_payload(setup):
     f = setup
-    tid = f.task()
-    f.tasks.set_status(tid, 'done')
+    tid = f.task(executor='cal_write')
+    finish_calendar(f, tid)
     f.tasks.add_event(tid, 'status', {'status': 'done', 'owner': 'bob', 'conversation_id': 'b'*32,
                                     'url': 'https://foreign.example', 'token': 'do-not-copy'})
     f.service.tick()
     assert f.store.list('bob')['notifications'] == []
     assert f.store.list('alice')['notifications'][0]['conversation'] == 'a'*32
     for user, cid, bot in [('alice', 'b'*32, 'bot-a'), ('alice', 'a'*32, 'bot-b')]:
-        f.tasks.set_status(f.task(user, cid, bot), 'done')
+        finish_calendar(f, f.task(user, cid, bot, executor='cal_write'))
     f.service.tick()
     assert len(f.store.list('alice')['notifications']) == 1
     assert 'do-not-copy' not in f.store.path.read_bytes().decode(errors='ignore')
@@ -189,19 +258,19 @@ def test_approval_alert_is_deduped_and_never_approves_or_reexecutes(setup):
 
 
 def test_first_install_skips_history_but_restart_catches_saved_events(setup, tmp_path):
-    f = setup; old = f.task(); f.tasks.set_status(old, 'done')
+    f = setup; finish_calendar(f, f.task(executor='cal_write'))
     fresh = n.NotificationStore(tmp_path / 'new-notifications.db')
     svc = api.NotificationService(f.tasks, f.chat, store=fresh)
     svc.tick(); assert fresh.list('alice')['notifications'] == []
-    new = f.task(); f.tasks.set_status(new, 'done')
+    new = f.task(executor='cal_write'); finish_calendar(f, new)
     restarted = api.NotificationService(f.tasks, f.chat, store=fresh)
-    restarted.tick(); assert fresh.list('alice')['notifications'][0]['task'] == new
+    restarted.tick(); assert fresh.list('alice')['notifications'][0]['title'].endswith('Calendar event added')
 
 
 def test_superseded_approval_is_not_announced_as_still_waiting(setup):
     f = setup; tid = f.task(); f.tasks.set_status(tid, 'awaiting_approval'); f.tasks.set_status(tid, 'done')
     f.service.tick()
-    assert [r['kind'] for r in f.store.list('alice')['notifications']] == ['done']
+    assert f.store.list('alice')['notifications'] == []
 
 
 def test_explicit_enable_config_device_disable_test_and_permission_boundaries(setup):
@@ -350,14 +419,14 @@ def test_delegation_opens_verified_parent_and_rejects_changed_relationship(setup
     f = setup; target = 'd'*32
     f.chat._conv_path('alice', target).write_text(json.dumps({'conversation_id': target, 'bot_id': 'worker'}))
     f.registry['worker'] = {'id': 'worker', 'owner': 'alice', 'name': 'Worker'}
-    tid = f.task(cid=target, bot='worker')
+    tid = f.task(cid=target, bot='worker', executor='cal_write')
     did = f.tasks.create_delegation(owner='alice', coordinator_bot_id='bot-a', target_bot_id='worker',
         task_text='Inspect result', parent_conversation_id='a'*32, task_id=tid)
-    f.tasks.set_status(tid, 'done', parent_delegation_id=did)
+    finish_calendar(f, tid, parent_delegation_id=did)
     f.service.tick()
     assert f.store.list('alice')['notifications'][0]['conversation'] == 'a'*32
-    other = f.task(cid=target, bot='worker')
-    f.tasks.set_status(other, 'done', parent_delegation_id=did)
+    other = f.task(cid=target, bot='worker', executor='cal_write')
+    finish_calendar(f, other, parent_delegation_id=did)
     f.service.tick()
     assert len(f.store.list('alice')['notifications']) == 1
 
@@ -553,11 +622,16 @@ def test_expired_login_does_not_allow_foreign_device_or_endpoint_takeover(setup,
 
 
 def test_owned_automation_task_can_notify_a_bot_free_thread_without_rebinding_it(setup):
+    from level6_message_schedule import preview_task_id
     f = setup; cid = 'd'*32
     conv = {'conversation_id': cid, 'title': 'Scheduled preview', 'automation': 'fixture-preview'}
     path = f.chat._conv_path('alice', cid); path.write_text(json.dumps(conv))
-    tid = f.task(cid=cid)
+    scheduled = preview_task_id('alice', '2026-11-16')
+    f.tasks.set_status(f.task(cid=cid, executor='level6', task_id=scheduled + '-retry-' + 'a'*12 + '-1'), 'done')
+    tid = f.task(cid=cid, executor='level6', task_id=scheduled)
     f.tasks.set_status(tid, 'done'); f.service.tick()
-    assert f.store.list('alice')['notifications'][0]['conversation'] == cid
+    alerts = f.store.list('alice')['notifications']
+    assert len(alerts) == 1 and alerts[0]['conversation'] == cid
+    assert alerts[0]['title'].endswith('Scheduled workout preview ready')
     assert json.loads(path.read_text()) == conv
     assert f.store.list('bob')['notifications'] == []
