@@ -6,7 +6,7 @@ import VoiceIcon from './VoiceIcon.jsx';
 import VoiceModeButton from './VoiceModeButton.jsx';
 
 const labels = { stopped: 'Voice off', starting: 'Starting voice…', loading: 'Loading wake detection…', listening: 'Listening for Kyrex', resuming: 'Resuming wake listening…', recording: 'Speak after the tone', transcribing: 'Recognizing your request…', working: 'Kyrex is working…', synthesizing: 'Preparing the reply…', speaking: 'Speaking the reply', interrupting: 'Interrupting the reply…', followup_wait: 'Preparing to listen again…', followup: 'Listening for your follow-up'  };
-export default function VoiceControls({ onConversation, onResult, onPhaseChange, compact = false, disabled = false }) {
+export default function VoiceControls({ onConversation, onResult, onPhaseChange, compact = false, disabled = false, triggerContainer }) {
   const [state, setState] = useState({ phase: 'stopped' });
   const [open, setOpen] = useState(false);
   const panelId = useId();
@@ -71,7 +71,7 @@ export default function VoiceControls({ onConversation, onResult, onPhaseChange,
     : labels[state.phase];
   const level = Math.max(0, Math.min(100, Number(state.level) || 0));
   const interruptible = ['working', 'synthesizing', 'speaking'].includes(state.phase);
-  return <div className="voice-controls" ref={container}>
+  const controls = <div className="voice-controls" ref={container}>
     <button ref={trigger} type="button" className={`voice-trigger${active ? ' is-active' : ''}`}
       disabled={disabled && !active} aria-label={compact && !active ? "Talk to Kbot" : "Voice controls"} aria-haspopup="dialog"
       aria-expanded={open} aria-controls={panelId} title={status}
@@ -80,6 +80,10 @@ export default function VoiceControls({ onConversation, onResult, onPhaseChange,
       <span>{active ? 'Voice on' : 'Voice'}</span>
     </button>
     <span role="status" className="sr-only">{status}</span>
+  </div>;
+  return <>
+    {/* The trigger follows the composer while the voice session stays mounted. */}
+    {triggerContainer === undefined ? controls : triggerContainer && createPortal(controls, triggerContainer)}
     {open && createPortal(<div className="voice-surface" data-compact={compact || undefined}>
       <div className="voice-scrim" aria-hidden="true" />
       <section ref={panel} id={panelId} className="voice-panel" data-phase={state.phase} role="dialog" aria-modal="true" aria-label="Voice options">
@@ -106,6 +110,6 @@ export default function VoiceControls({ onConversation, onResult, onPhaseChange,
         {active && <meter className="sr-only" min="0" max="100" value={level} aria-label="Microphone activity" />}
       </section>
     </div>, document.body)}
-  </div>;
+  </>;
 }
 

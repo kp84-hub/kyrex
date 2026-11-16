@@ -431,8 +431,12 @@ def run_review(ctx, owner, text, task_id, cid, send, *, on_result=None,
         if destination(owner) != row['destination']:
             raise ValueError('The calendar account or destination changed. Save event review settings again.')
         return row
-    def reply(message):
-        if on_result: on_result({'status':'no_changes','count':0,'final_response':message})
+    def reply(message, event_id=None):
+        if on_result:
+            result = {'status':'no_changes','count':0,'final_response':message}
+            if event_id:
+                result.update(count=1, event_id=event_id)
+            on_result(result)
         send(owner, message)
     try:
         row = active()
@@ -460,7 +464,7 @@ def run_review(ctx, owner, text, task_id, cid, send, *, on_result=None,
         receipt = connectors.default_store().calendar_writer(owner).create_event(event, expected_binding=row['destination'])
         if receipt.get('id') != event['id']: raise ValueError('Calendar returned an unexpected event reference.')
         store.outcome(owner, identity, revision, 'added', 'Added to your calendar after your approval.')
-        reply(cal_writer.format_receipt(row['intent'], receipt))
+        reply(cal_writer.format_receipt(row['intent'], receipt), event_id=receipt['id'])
     except Exception as exc:
         # Never disclose provider response text, source bodies or credentials.
         row = store.get(owner, identity)

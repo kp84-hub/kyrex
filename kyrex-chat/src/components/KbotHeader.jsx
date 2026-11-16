@@ -4,7 +4,7 @@ import { closeKbot, readKbotAnchor, resizeKbot } from '../lib/kbotSurface.js';
 
 const labels = { idle: 'Here with you', thinking: 'Thinking…', replying: 'Replying…', listening: 'Listening…', speaking: 'Talking…' };
 
-export default function KbotHeader({ phase, botName, conversationId, onHistory, voiceControls, bots = [], activeBotId = null, onSelectBot, botPickerDisabled = false, onResize = resizeKbot }) {
+export default function KbotHeader({ phase, botName, conversationId, onHistory, bots = [], activeBotId = null, onSelectBot, botPickerDisabled = false, onResize = resizeKbot }) {
   const [anchor, setAnchor] = useState(() => readKbotAnchor(window.__kyrexKbotAnchor));
   useEffect(() => {
     const update = () => { const next = readKbotAnchor(window.__kyrexKbotAnchor); if (next) setAnchor(next); };
@@ -41,7 +41,6 @@ export default function KbotHeader({ phase, botName, conversationId, onHistory, 
     <button type="button" className="kbot-icon-btn" onClick={onHistory} aria-label="Kbot conversations and settings" title="Conversations and settings">☰</button>
     <div className="kbot-heading"><strong>Kbot</strong><span role="status"><i className={`kbot-status-dot phase-${phase}`} />{labels[phase] || labels.idle}</span><small title={botName}>{botName}</small></div>
     <BotPicker compact bots={bots} activeBotId={activeBotId} onSelectBot={onSelectBot} disabled={botPickerDisabled} />
-    {voiceControls}
     {anchor?.size && <label className="kbot-size-picker" title="Window size">
       <svg width="17" height="17" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><rect x="2.5" y="3" width="15" height="14" rx="2" /><path d="M3 7h14M10 10h4v4M14 10l-5 5" /></svg>
       <select aria-label="Kbot window size" value={anchor.size} onChange={event => onResize(event.target.value)}>

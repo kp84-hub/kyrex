@@ -33,6 +33,7 @@ import { latestProgressStage, mergeDeveloperProgress } from './lib/progress.js';
 export default function App() {
   const kbotMode = isKbotSurface();
   const [voicePhase, setVoicePhase] = useState('stopped');
+  const [voiceAnchor, setVoiceAnchor] = useState(null);
   const installState = useAppInstall();
   const {
     conversations,
@@ -332,11 +333,6 @@ export default function App() {
   }, [kbotMode]);
   useEffect(() => { if (kbotMode) document.title = `Kbot|${phase}`; }, [kbotMode, phase]);
 
-  const voiceControls = !setupRequired && <VoiceControls disabled={needsAuth} compact={kbotMode}
-    onPhaseChange={kbotMode ? setVoicePhase : undefined}
-    onConversation={async cid => { await refreshList({ silent: true }); loadConversation(cid); }}
-    onResult={async cid => { await refreshList({ silent: true }); refreshMessages(cid); }} />;
-
   const notificationControls = !setupRequired && !needsAuth && <NotificationCenter compact={kbotMode} onOpenConversation={async cid => {
     setSettingsOpen(false); setBotsOpen(false); setConnectionsOpen(false); setSidebarOpen(false);
     await refreshList({ silent: true }); await loadConversation(cid);
@@ -371,19 +367,21 @@ export default function App() {
           botPickerDisabled={setupRequired || needsAuth}
           botName={bots.find(bot => bot.id === activeBotId)?.name || (activeBotId ? activeBotId : 'Kyrex')}
           conversationId={activeId}
-          onHistory={() => setSidebarOpen(value => !value)}
-          voiceControls={voiceControls} /> : <ChatHeader
+          onHistory={() => setSidebarOpen(value => !value)} /> : <ChatHeader
           onToggleSidebar={() => setSidebarOpen((o) => !o)}
           bots={bots}
           activeBotId={activeBotId}
           onSelectBot={openSelectedBot}
           notificationControls={notificationControls}
           isWorking={headerWorking}
-          voiceControls={voiceControls}
           developerWorkspace={reviewBot && !setupRequired && !botsOpen && !connectionsOpen && !settingsOpen
             && workspaceContext?.botId === reviewBot.id ? workspaceContext.context : null}
           onReviewDeveloperChanges={() => openWorkspaceReview(lastDeveloperResult?.content)}
         />}
+        {!setupRequired && <VoiceControls disabled={needsAuth} compact={kbotMode} triggerContainer={voiceAnchor}
+          onPhaseChange={kbotMode ? setVoicePhase : undefined}
+          onConversation={async cid => { await refreshList({ silent: true }); loadConversation(cid); }}
+          onResult={async cid => { await refreshList({ silent: true }); refreshMessages(cid); }} />}
         {kbotMode && notificationControls}
         {/* Provider configuration errors are surfaced through this banner.
             Provider configuration and workspace attachment are distinct
@@ -453,7 +451,7 @@ export default function App() {
             onOpenConversation={selectConversation}
             onReviewDeveloperChanges={reviewBot ? openWorkspaceReview : undefined}
           />
-          <Composer compact={kbotMode} conversationId={activeId} onSend={send} onStop={stop} isGenerating={isGenerating} isConversationReady={isConversationReady} providers={providers} activeProvider={activeProvider} activeModel={activeModel} activeBotId={activeBotId} onChangeProvider={changeProvider} workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} onAttachWorkspace={attachWorkspace} />
+          <Composer compact={kbotMode} conversationId={activeId} onSend={send} onStop={stop} isGenerating={isGenerating} isConversationReady={isConversationReady} providers={providers} activeProvider={activeProvider} activeModel={activeModel} activeBotId={activeBotId} onChangeProvider={changeProvider} workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} onAttachWorkspace={attachWorkspace} voiceAnchorRef={setVoiceAnchor} />
           {reviewBot && workspaceReview?.botId === reviewBot.id && workspaceReview.conversationId === activeId &&
             <DeveloperChanges botId={reviewBot.id} report={workspaceReview.report}
               onClose={() => setWorkspaceReview(null)} onRepositorySettings={() => {

@@ -1,5 +1,6 @@
 """Owner-bound inbox, explicit browser consent, and saved-event projection."""
 from contextlib import asynccontextmanager
+from datetime import datetime
 import importlib.util
 import json
 import logging
@@ -142,6 +143,17 @@ def settings(request: Request):
                       'coordinator': destination})
 
 
+@router.post('/presence')
+async def chat_presence(request: Request):
+    user = owner(request); same_origin(request); data = await body(request)
+    tab = identity(data.get('tab'))
+    sequence, visible = data.get('sequence'), data.get('visible')
+    if type(sequence) is not int or not 0 < sequence < 2**53 or type(visible) is not bool:
+        raise HTTPException(400, 'Invalid Chat visibility update.')
+    notifications.NotificationStore().report_chat_presence(user, tab, sequence, visible)
+    return reply({'updated': True})
+
+
 @router.post('/read')
 async def mark_read(request: Request):
     user = owner(request); same_origin(request); data = await body(request)
@@ -253,22 +265,75 @@ class NotificationService:
         if event['type'] != 'status' or not isinstance(event.get('payload'), dict):
             return None
         status = event['payload'].get('status')
-        titles = {'done': 'Task finished', 'failed': 'Task needs attention',
-                  'awaiting_approval': 'Task review needed', 'cancelled': 'Task stopped'}
-        if status not in titles:
+        if status not in ('done', 'failed', 'awaiting_approval'):
             return None
         task = self.tasks.get(event['task_id']) or {}
         if task.get('status') != status:
             return None  # Superseded approval/old transition: no stale alarm.
+        source = 'task:' + event['task_id'] + ':' + status
+        kind = status
+        task_reference = event['task_id']
+        if status == 'awaiting_approval':
+            approval = self.tasks.get_pending_approval(event['task_id']) or {}
+            if not approval:
+                return None
+            source += ':' + approval['approval_id']
+            title = 'Task review needed'
+        elif status == 'done' and (count := self.calendar_addition_count(task)):
+            finished_at = datetime.fromisoformat(task['finished_at']).timestamp()
+            if self.store.chat_was_visible(task['chat_id'], finished_at):
+                return None
+            source = 'calendar-added:' + event['task_id']
+            kind = 'automation'
+            title = 'Calendar event added' if count == 1 else 'Calendar events added'
+            # A settled result must survive cleanup of the suggestion/review.
+            task_reference = None
+        elif self.scheduled_preview(task):
+            kind = 'automation'
+            title = 'Scheduled workout preview ready' if status == 'done' else 'Scheduled workout preview needs attention'
+        else:
+            return None
         target = self.destination(task)
         if not target:
             return None
-        source = 'task:' + event['task_id'] + ':' + status
-        if status == 'awaiting_approval':
-            approval = self.tasks.get_pending_approval(event['task_id']) or {}
-            source += ':' + (approval.get('approval_id') or str(event['event_id']))
-        return {'owner': target[0], 'source': source, 'kind': status, 'title': target[2] + ' · ' + titles[status],
-                'conversation': target[1], 'task': event['task_id']}
+        return {'owner': target[0], 'source': source, 'kind': kind, 'title': target[2] + ' · ' + title,
+                'conversation': target[1], 'task': task_reference}
+
+    @staticmethod
+    def calendar_addition_count(task):
+        executor, result = task.get('executor_prefix'), task.get('result')
+        if not isinstance(result, dict):
+            return 0
+        if executor == 'cal_write':
+            return int(result.get('status') == 'ok' and bool(result.get('event_id')))
+        if result.get('status') != 'no_changes':
+            return 0
+        if executor == 'event_calendar':
+            return int(bool(result.get('event_id')))
+        count = result.get('count')
+        if executor == 'email_calendar':
+            return int(type(count) is int and count == 1)
+        if executor == 'level6' and type(count) is int and 0 < count <= 6:
+            from level6_calendar_batch import PASTED_TASK_PREFIX
+            from serve import LEVEL6_CALENDAR_BATCH_REQUEST
+            text = task['task_text']
+            if text == LEVEL6_CALENDAR_BATCH_REQUEST or text.startswith(PASTED_TASK_PREFIX):
+                return count
+        return 0
+
+    @staticmethod
+    def scheduled_preview(task):
+        if task.get('executor_prefix') != 'level6':
+            return False
+        from level6_message_schedule import expected_week, preview_task_id
+        owner = task.get('chat_id')
+        if not owner:
+            return False
+        try:
+            week = expected_week(task['task_id'], owner)
+        except ValueError:
+            return False
+        return week is not None and task['task_id'] == preview_task_id(owner, week)
 
     def trainer_alerts(self):
         from paths import data_dir

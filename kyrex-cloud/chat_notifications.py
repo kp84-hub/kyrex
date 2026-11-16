@@ -23,6 +23,7 @@ from paths import data_dir
 ID = re.compile(r'[a-f0-9]{32}\Z')
 RETENTION_SECONDS = 30 * 86400
 MAX_DEVICES = 10
+CHAT_PRESENCE_TTL = 45
 
 
 def box():
@@ -88,6 +89,9 @@ class NotificationStore:
                     task TEXT, created REAL NOT NULL, read REAL, archived INTEGER NOT NULL DEFAULT 0,
                     UNIQUE(owner,source));
                 CREATE INDEX IF NOT EXISTS inbox_owner ON inbox(owner,created DESC);
+                CREATE TABLE IF NOT EXISTS chat_presence (
+                    owner TEXT NOT NULL, tab TEXT NOT NULL, sequence INTEGER NOT NULL,
+                    visible_since REAL, expires REAL NOT NULL, PRIMARY KEY(owner,tab));
                 CREATE TABLE IF NOT EXISTS devices (
                     id TEXT PRIMARY KEY, owner TEXT NOT NULL, session TEXT NOT NULL,
                     endpoint_hash TEXT UNIQUE NOT NULL, sealed TEXT NOT NULL,
@@ -122,6 +126,30 @@ class NotificationStore:
         with self.db() as db:
             db.execute('INSERT OR IGNORE INTO meta VALUES (?,?)', ('task_cursor', str(latest_event)))
             db.execute('INSERT OR IGNORE INTO meta VALUES (?,?)', ('started', str(time.time())))
+            # Retire old generic Chat alerts and any remaining pushes. The
+            # scheduled workout preview has its own deterministic task ID.
+            db.execute('''UPDATE inbox SET archived=1,read=coalesce(read,?)
+                WHERE archived=0 AND source LIKE 'task:%' AND kind IN ('done','failed','cancelled')
+                AND source NOT GLOB 'task:l6-preview-????????????????-????-??-??:*' ''', (time.time(),))
+            db.execute('DELETE FROM deliveries WHERE notification IN (SELECT id FROM inbox WHERE archived=1)')
+
+    def report_chat_presence(self, owner, tab, sequence, visible):
+        now = time.time()
+        with self.db() as db:
+            db.execute('''INSERT INTO chat_presence VALUES (?,?,?,?,?)
+                ON CONFLICT(owner,tab) DO UPDATE SET sequence=excluded.sequence,
+                expires=CASE WHEN excluded.visible_since IS NULL THEN min(chat_presence.expires,excluded.expires)
+                    ELSE excluded.expires END,
+                visible_since=CASE WHEN excluded.visible_since IS NULL THEN chat_presence.visible_since
+                    WHEN chat_presence.expires<=? THEN excluded.visible_since
+                    ELSE coalesce(chat_presence.visible_since,excluded.visible_since) END
+                WHERE excluded.sequence>chat_presence.sequence''',
+                (owner, tab, sequence, now if visible else None, now + (CHAT_PRESENCE_TTL if visible else 0), now))
+
+    def chat_was_visible(self, owner, finished_at):
+        with self.db() as db:
+            return db.execute('''SELECT 1 FROM chat_presence WHERE owner=?
+                AND visible_since<=? AND expires>? LIMIT 1''', (owner, finished_at, finished_at)).fetchone() is not None
 
     def meta(self, key):
         with self.db() as db:
@@ -349,6 +377,7 @@ class NotificationStore:
         with self.db() as db:
             db.execute('DELETE FROM inbox WHERE created<?', (time.time() - RETENTION_SECONDS,))
             db.execute('DELETE FROM deliveries WHERE notification NOT IN (SELECT id FROM inbox)')
+            db.execute('DELETE FROM chat_presence WHERE expires<?', (time.time() - 3600,))
 
 
 def send_push(subscription, identity, private, subject):
