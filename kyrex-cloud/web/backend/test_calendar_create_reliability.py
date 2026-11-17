@@ -554,3 +554,74 @@ def test_chat_create_handoff_keeps_payload_route_and_owner_guards(calendar_hando
     with pytest.raises(chat_service.ChatUnavailable):
         asyncio.run(turn())
     assert store.list_tasks() == []
+
+
+@pytest.mark.parametrize('stored', [False, True])
+def test_calendar_title_reply_queues_exact_review_and_reuses_task(calendar_handoff, stored):
+    store, conv, bot = calendar_handoff
+    bot['policy'] = serve.COORDINATOR_PRESET
+    offer = {
+        'role': 'assistant',
+        'content': (
+            '**Worth adding**\n\n'
+            '**Service appointment — Tuesday, Nov 10, 2026, 4:00–4:50 PM ET**\n\n'
+            '- 123 Example Street, Garner, NC 27529\n'
+            '- Source: reminder received Sun Nov 8, 2026\n'
+            '- Nov 10 only has an existing 6:45–7:30 PM event\n\n'
+            'Want me to add the Nov 10 appointment? Tell me what to title it.'),
+    }
+    draft = {'start': '2026-11-10T16:00:00', 'end': '2026-11-10T16:50:00',
+             'all_day': False, 'location': '123 Example Street, Garner, NC 27529'}
+    assert cal_writer.draft_from_calendar_offer(offer['content']) == draft
+    if stored:
+        offer['calendar_title_draft'] = draft
+    conv['messages'] = [offer]
+    chat_service._write('alice', conv)
+    cid = conv['conversation_id']
+    intent = {**draft, 'title': 'Service – Alex'}
+    executions = []
+
+    def execute(**kwargs):
+        assert kwargs['executor_prefix'] == 'cal_write'
+        assert json.loads(kwargs['task_text']) == intent
+        executions.append(kwargs['task_id'])
+        kwargs['on_approval']('calendar-title-review', 1, 'review-token',
+                              'Create event', json.dumps(intent))
+        assert store.get(kwargs['task_id'])['status'] == 'awaiting_approval'
+        kwargs['on_approval_resolved']('calendar-title-review', 'denied')
+        kwargs['on_result']({'status': 'ok', 'final_response': 'Review declined.'})
+
+    async def turn():
+        frames = chat_service.stream_chat('alice', cid, 'yes title "Service – Alex', request_id='title-reply')
+        return [frame async for frame in frames]
+
+    worker = TaskWorker(store, worker_id='title-review', executor=execute, idle_sleep=0.01)
+    worker.start()
+    try:
+        frames = asyncio.run(turn())
+        assert any(frame['type'] == 'approval_request' for frame in frames)
+        assert asyncio.run(turn())[-1] == frames[-1]
+    finally:
+        worker.stop()
+    assert len(executions) == len(store.tasks_for_conversation(cid, 'alice')) == 1
+    assert store.tasks_for_conversation(cid, 'bob') == []
+
+
+@pytest.mark.parametrize('details, offered', [
+    ('First: Nov 10, 2026, 4:00–4:50 PM ET\nSecond: Nov 11, 2026, 3:00–3:30 PM ET', 'an appointment'),
+    ('Nov 10, 2026, 4:00–4:50 PM PT', 'the Nov 10 appointment'),
+    ('Nov 10, 2026, 4:00–4:50 PM ET', 'the Nov 11 appointment'),
+])
+def test_calendar_title_reply_with_unclear_offer_asks_instead_of_reading(calendar_handoff, details, offered):
+    store, conv, bot = calendar_handoff
+    bot['policy'] = serve.COORDINATOR_PRESET
+    conv['messages'] = [{'role': 'assistant', 'content':
+        f'{details}\n\nWant me to add {offered}? Tell me what to title it.'}]
+    chat_service._write('alice', conv)
+
+    async def turn():
+        return [frame async for frame in chat_service.stream_chat(
+            'alice', conv['conversation_id'], 'yes, title: Service')]
+
+    assert 'one appointment' in asyncio.run(turn())[-1]['content']
+    assert store.list_tasks() == []
