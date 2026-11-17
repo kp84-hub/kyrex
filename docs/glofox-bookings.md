@@ -136,6 +136,14 @@ Glofox member account. Close the manual viewer when finished, then repeat
 your workout request. Signing in in an unrelated desktop tab or phone app
 does not connect the Browser Host's profile.
 
+Allow `auth.glofox.com` in both the Browser Bot's browser domain allowlist
+and the enrolled host's site permissions. Glofox uses that domain to renew
+the member session. Kyrex checks permission before opening the studio portal,
+since its portal clears the saved sign-in when a refresh request fails. If
+Glofox rejects the saved session after permission is in place, sign in again
+at the studio URL in the same private viewer. **Connections → Browser →
+Test browser connection** checks sign-in without booking a class.
+
 For an already configured private viewer on the host, its existing command is:
 
 ```bash

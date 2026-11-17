@@ -12,6 +12,9 @@ URL = 'https://level6training.com/book-a-class'
 HOSTS = ('level6training.com', 'app.glofox.com', 'api.glofox.com', 'gf-api.aws.glofox.com')
 REFRESH_HOST = 'auth.glofox.com'
 REFRESH_URL = f'https://{REFRESH_HOST}/refresh'
+REFRESH_PERMISSION_MESSAGE = (
+    'Allow auth.glofox.com in your Browser Bot and Host site permissions so Glofox can renew your saved session.'
+)
 # The portal formats monthDay as DD; retain unpadded labels for older layouts.
 DAY_CONTROL = re.compile(r'^(mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\s+(0?[1-9]|[12][0-9]|3[01])$', re.I)
 
@@ -153,6 +156,7 @@ def review_hash(snapshot, control, request, details):
 
 
 CHANGE_REASONS = {
+    'session_refresh_blocked': REFRESH_PERMISSION_MESSAGE,
     'page_changed': 'The page no longer matches the saved review.',
     'control_changed': 'The reviewed booking control changed or became unavailable.',
     'request_changed': 'The member session or native booking request changed.',

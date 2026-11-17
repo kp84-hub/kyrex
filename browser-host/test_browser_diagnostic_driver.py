@@ -103,7 +103,7 @@ def test_member_portal_sign_in_is_observed_without_account_text(real_browser, mo
         route.fulfill(status=200, content_type='text/html', body=body)
     real_browser._context.route('**/*', fixture)
     result = driver.run(real_browser, operator.FakeProto(), {'url': entry},
-                        allowlist=list(workout.HOSTS), stages={'dispatch': 'passed', 'browser_launch': 'passed'})
+                        allowlist=[*workout.HOSTS, workout.REFRESH_HOST], stages={'dispatch': 'passed', 'browser_launch': 'passed'})
     assert result['diagnostic']['code'] == ('' if signed_in else 'login_required')
     if signed_in: assert result['diagnostic']['stages']['sign_in'] == 'passed'
     assert 'private account' not in str(result)
@@ -133,7 +133,7 @@ def test_homepage_waits_for_portal_and_allows_only_exact_guest_bootstrap(real_br
         route.fulfill(status=200, content_type='text/html', body=body)
     real_browser._context.route('**/*', fixture)
     result = driver.run(real_browser, operator.FakeProto(), {'url': 'https://level6training.com/'},
-                        allowlist=list(workout.HOSTS), stages={'browser_launch': 'passed'})
+                        allowlist=[*workout.HOSTS, workout.REFRESH_HOST], stages={'browser_launch': 'passed'})
     assert result['diagnostic']['code'] == ''
     assert result['diagnostic']['stages']['sign_in'] == 'passed'
     assert [url for method, url in reached if method == 'POST'] == ['https://api.glofox.com/2.0/login']
@@ -172,13 +172,18 @@ def test_delayed_iframe_and_member_session_do_not_report_an_initial_login_link(r
         route.fulfill(status=200, content_type='text/html', body=body)
     real_browser._context.route('**/*', fixture)
     result = driver.run(real_browser, operator.FakeProto(), {'url': workout.URL},
-                        allowlist=list(workout.HOSTS), stages={'browser_launch': 'passed'})
+                        allowlist=[*workout.HOSTS, workout.REFRESH_HOST], stages={'browser_launch': 'passed'})
     assert result['diagnostic']['code'] == ''
     assert result['diagnostic']['stages']['sign_in'] == 'passed'
 
 
-def test_studio_diagnostic_can_renew_the_same_session_as_booking(real_browser):
+@pytest.mark.parametrize('refresh_status', [200, 401])
+def test_studio_diagnostic_can_renew_the_same_session_as_booking(real_browser, monkeypatch, refresh_status):
     import workout_booking_schema as workout
+    import workout_booking_driver as adapter
+    wait = adapter.member_session
+    monkeypatch.setattr(adapter, 'member_session',
+                        lambda page, allowed: wait(page, allowed, timeout_ms=1500))
     portal = 'https://app.glofox.com/portal/#/branch/' + workout.BRANCH + '/classes-list-view'
     posts = []
 
@@ -187,7 +192,7 @@ def test_studio_diagnostic_can_renew_the_same_session_as_booking(real_browser):
         if req.url == workout.REFRESH_URL:
             if req.method == 'POST':
                 posts.append(req.url)
-            route.fulfill(status=200, body='{}', headers={'Access-Control-Allow-Origin': '*',
+            route.fulfill(status=refresh_status if req.method == 'POST' else 200, body='{}', headers={'Access-Control-Allow-Origin': '*',
                 'Access-Control-Allow-Methods': 'POST', 'Access-Control-Allow-Headers': 'content-type'})
             return
         if req.url == workout.URL:
@@ -204,8 +209,19 @@ def test_studio_diagnostic_can_renew_the_same_session_as_booking(real_browser):
     real_browser._context.route('**/*', fixture)
     result = driver.run(real_browser, operator.FakeProto(), {'url': workout.URL},
                         allowlist=[*workout.HOSTS, workout.REFRESH_HOST], stages={})
-    assert result['diagnostic']['stages']['sign_in'] == 'passed'
+    if refresh_status == 200:
+        assert result['diagnostic']['stages']['sign_in'] == 'passed'
+    else:
+        assert result['diagnostic']['code'] == 'session_refresh_rejected'
     assert posts == [workout.REFRESH_URL]
+
+
+def test_missing_refresh_permission_stops_before_opening_the_studio(real_browser):
+    import workout_booking_schema as workout
+    result = driver.run(real_browser, operator.FakeProto(), {'url': workout.URL},
+                        allowlist=list(workout.HOSTS), stages={'browser_launch': 'passed'})
+    assert result['diagnostic']['code'] == 'session_refresh_blocked'
+    assert real_browser._page.url == 'about:blank'
 
 
 @pytest.mark.parametrize('entry', ['https://level6training.com/book-a-class', 'https://level6training.com/'])
@@ -228,7 +244,7 @@ def test_loading_or_blocked_auth_is_not_reported_as_logout(real_browser, monkeyp
         route.fulfill(status=200, content_type='text/html', body=body)
     real_browser._context.route('**/*', fixture)
     result = driver.run(real_browser, operator.FakeProto(), {'url': entry},
-                        allowlist=list(workout.HOSTS), stages={'browser_launch': 'passed'})
+                        allowlist=[*workout.HOSTS, workout.REFRESH_HOST], stages={'browser_launch': 'passed'})
     assert result['diagnostic']['code'] == ('session_verification_blocked' if blocked_auth else 'session_unverified')
     assert 'POST' not in reached
     assert 'private-fixture-member' not in str(result)
@@ -244,5 +260,5 @@ def test_studio_without_supported_portal_does_not_skip_sign_in(real_browser, mon
     real_browser._context.route('**/*', lambda route: route.fulfill(status=200,
         content_type='text/html', body='<body>My bookings outside a supported portal</body>'))
     result = driver.run(real_browser, operator.FakeProto(), {'url': 'https://level6training.com/'},
-                        allowlist=list(workout.HOSTS), stages={})
+                        allowlist=[*workout.HOSTS, workout.REFRESH_HOST], stages={})
     assert result['diagnostic']['code'] == 'unsupported_portal'

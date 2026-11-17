@@ -210,6 +210,8 @@ def test_booking_preparation_reuses_the_native_saved_session_refresh(browser, mo
         assert 'Glofox rejected the saved session' in result['final_response']
     else:
         assert 'Allow auth.glofox.com' in result['final_response']
+        assert live._page.url == 'about:blank'
+        assert result['outcome'] == 'changed'
     assert state.get('refreshes', []) == ([] if outcome == 'blocked' else ['POST'])
 
 

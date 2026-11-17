@@ -6,7 +6,7 @@ from datetime import date, datetime, time, timedelta
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
-from workout_booking_schema import BRANCH, HOSTS, REFRESH_HOST, REFRESH_URL, URL
+from workout_booking_schema import BRANCH, HOSTS, REFRESH_HOST, REFRESH_PERMISSION_MESSAGE, REFRESH_URL, URL
 
 ACTION = 'member_bookings'
 STUDIO_LABEL = 'Level 6'  # existing supported adapter, selected by an owner request
@@ -22,7 +22,7 @@ FAILURES = {
     'signed_out': 'The member portal shows you are signed out. Sign in through the Browser Bot private viewer, then close the viewer.',
     'session_unverified': 'The member portal loaded, but its saved session could not be verified. Check it in the Browser Bot private viewer; this is not proof that you are signed out.',
     'unsupported_portal': 'The supported Glofox member portal did not load. Check Browser Host site access and reader compatibility.',
-    'refresh_blocked': 'The reader could not allow the portal session refresh. Check Browser Host site permission for auth.glofox.com.',
+    'refresh_blocked': REFRESH_PERMISSION_MESSAGE,
     'missing_read': 'The signed-in portal did not expose a supported My bookings read. Check reader compatibility.',
     'unavailable': 'The member bookings could not be verified. Check the Browser Host session and adapter.',
 }

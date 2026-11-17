@@ -1,10 +1,14 @@
 """Readiness is distinct from a verified signed-out member portal."""
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 
 import workout_booking_driver as adapter
 import workout_booking_schema as schema
+import browser_diagnostic_driver
+import member_bookings_driver
+import member_bookings_schema
 
 PORTAL = 'https://app.glofox.com/portal/#/branch/' + schema.BRANCH + '/classes-list-view'
 
@@ -57,3 +61,33 @@ def test_missing_ambiguous_wrong_branch_and_off_list_frames_are_not_selected(pag
     assert adapter.member_session(page, lambda url: True, timeout_ms=500) == 'unsupported_portal'
     page.frames = []
     assert adapter.member_session(page, lambda url: True, timeout_ms=500) == 'unsupported_portal'
+
+
+def test_missing_refresh_permission_never_opens_the_saved_portal(tmp_path):
+    def unexpected(*args, **kwargs):
+        pytest.fail('The portal must stay closed when renewal is blocked')
+
+    context = SimpleNamespace(service_workers=[], route=unexpected)
+    driver = SimpleNamespace(_context=context, _page=SimpleNamespace(goto=unexpected),
+                             navigate=unexpected)
+    permissions = list(schema.HOSTS)
+    proto = SimpleNamespace(operation=lambda *args: True)
+    start = (datetime.now(member_bookings_schema.TZ) + timedelta(days=1)).replace(
+        hour=8, minute=30, second=0, microsecond=0)
+    booking = adapter.run(driver, proto, {
+        'id': 'a' * 32, 'nonce': 'b' * 64, 'stage': 'prepare', 'url': schema.URL,
+        'details': {'date': start.date().isoformat(), 'time': '08:30', 'event_id': 'c' * 24,
+                    'class_name': 'Group Fitness Class', 'trainer_name': 'Coach',
+                    'start': int(start.timestamp())},
+        'steps': [],
+    }, allowlist=permissions, root=tmp_path)
+    assert booking['change_reason'] == 'session_refresh_blocked'
+    with pytest.raises(member_bookings_schema.ReadFailure) as error:
+        member_bookings_driver.run(driver, proto, {
+            'url': schema.URL, 'start': start.date().isoformat(),
+            'end': (start.date() + timedelta(days=7)).isoformat(),
+        }, allowlist=permissions)
+    assert error.value.code == 'refresh_blocked'
+    diagnostic = browser_diagnostic_driver.run(
+        driver, proto, {'url': schema.URL}, allowlist=permissions, stages={})
+    assert diagnostic['diagnostic']['code'] == 'session_refresh_blocked'

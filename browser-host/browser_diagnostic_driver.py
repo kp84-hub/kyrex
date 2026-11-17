@@ -23,8 +23,6 @@ def run(driver, proto, spec, *, allowlist, stages):
     if context.service_workers:
         return schema.host_result('unsupported_portal', stages=stages)
 
-    auth_blocked = False
-
     def studio_page(value):
         # The existing adapter owns this studio, including its homepage and
         # trailing-slash routes. Do not infer support from arbitrary host text.
@@ -32,12 +30,23 @@ def run(driver, proto, spec, *, allowlist, stages):
         host = urlsplit(workout.URL).hostname
         return parsed.scheme == 'https' and parsed.hostname in {host, 'www.' + host}
 
+    refresh_allowed = allowed(workout.REFRESH_URL)
+    if studio_page(url) and not refresh_allowed:
+        return schema.host_result('session_refresh_blocked', stages=stages)
+
+    auth_blocked = False
+    refresh_blocked = False
+    refresh_rejected = False
+
     def member_probe():
         return studio_page(url) or studio_page(page.url)
 
     def guard(route):
-        nonlocal auth_blocked
+        nonlocal auth_blocked, refresh_blocked
         req = route.request
+        if not refresh_allowed and req.is_navigation_request() and studio_page(req.url):
+            refresh_blocked = True
+            route.abort(); return
         if urlsplit(req.url).hostname == workout.REFRESH_HOST:
             if member_probe() and (session_refresh(req) or session_refresh_preflight(req)):
                 if allowed(req.url):
@@ -58,6 +67,13 @@ def run(driver, proto, spec, *, allowlist, stages):
             route.fallback()
 
     context.route('**/*', guard)
+
+    def observe_refresh(response):
+        nonlocal refresh_rejected
+        if response.status in {401, 403} and session_refresh(response.request):
+            refresh_rejected = True
+
+    page.on('response', observe_refresh)
     try:
         # WebSocket messages are outside HTTP routing and must not become an
         # unobserved write channel during a nominally read-only test.
@@ -74,12 +90,14 @@ def run(driver, proto, spec, *, allowlist, stages):
         if member_probe():
             session = member_session(page, allowed)
             if session != 'signed_in':
-                code = ('session_verification_blocked' if auth_blocked else
+                code = ('session_refresh_rejected' if refresh_rejected else
+                        'session_verification_blocked' if auth_blocked else
                         'login_required' if session == 'signed_out' else session)
                 return schema.host_result(code, stages=stages)
             stages['sign_in'] = 'passed'
         return schema.host_result(stages=stages)
     except Exception:
-        return schema.host_result('site_unreachable', stages=stages)
+        return schema.host_result(
+            'session_refresh_blocked' if refresh_blocked else 'site_unreachable', stages=stages)
     # The guard remains installed until run_actions closes this task-owned
     # context, so late page timers cannot write during teardown.
