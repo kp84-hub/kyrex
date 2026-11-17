@@ -24,6 +24,7 @@ def run(driver, proto, spec, *, allowlist, root):
     guards = []
     read_guards = []
     read_replaced = False
+    phase = 'cancel_reservation'
     allowed = lambda url: domain_allowed(url, allowlist)[0] and domain_allowed(url, list(member.READER_HOSTS))[0]
 
     def identify(route):
@@ -97,6 +98,7 @@ def run(driver, proto, spec, *, allowlist, root):
         read_replaced = True
         page.on('response', receipt)
         try:
+            phase = 'cancel_profile'
             target = portal.locator('#profile-booking-' + spec['details']['reference'] + '-cancel')
             if target.count() != 1 or not target.is_visible():
                 # The schedule can prefetch bookings without opening Profile.
@@ -114,6 +116,7 @@ def run(driver, proto, spec, *, allowlist, root):
             if target.count() != 1 or not target.is_visible() or not target.is_enabled():
                 raise ValueError('The existing reservation has no supported cancellation control.')
             target.click(timeout=3000)
+            phase = 'cancel_dialog'
             button = portal.locator('#general-dialog-confirm-button')
             button.wait_for(state='visible', timeout=5000)
             if button.count() != 1 or not button.is_enabled() or button.inner_text().strip() != 'Cancel booking':
@@ -126,6 +129,7 @@ def run(driver, proto, spec, *, allowlist, root):
             # Read the observed confirmation dialog only, not the whole profile.
             dialog = button.locator('xpath=ancestor::*[@role="dialog"][1]')
             if dialog.count() != 1: raise ValueError('The cancellation confirmation dialog is unsupported.')
+            phase = 'cancel_terms'
             text = schema.terms(dialog.inner_text())
             native = schema.request('https://api.glofox.com/2.0/bookings/' + spec['details']['reference'],
                                     'DELETE', None, spec['identity'], spec['details']['reference'])
@@ -136,7 +140,9 @@ def run(driver, proto, spec, *, allowlist, root):
             if schema.terms(dialog.inner_text()) != text:
                 raise ValueError('Cancellation terms changed.')
             armed[0] = True
+            phase = 'cancel_request' if spec['stage'] == 'prepare' else 'cancel_submission'
             button.click(timeout=3000)
+            if submitted[0]: phase = 'cancel_receipt'
             deadline = time.monotonic() + 4
             while time.monotonic() < deadline and not (captured or responses): page.wait_for_timeout(100)
             if spec['stage'] == 'prepare':
@@ -148,12 +154,15 @@ def run(driver, proto, spec, *, allowlist, root):
                     'reference': spec['details']['reference'] if responses else ''}
         finally:
             page.remove_listener('response', receipt)
-    except Exception:
+    except Exception as exc:
+        exc.kyrex_workout_phase = phase
         if submitted[0] or attempted[0]:
-            return {'mode': workout.ACTION, 'status': 'error', 'outcome': 'unknown'}
+            return {'mode': workout.ACTION, 'status': 'error', 'outcome': 'unknown',
+                    'workout_failure': workout.log_browser_failure(exc)}
         raise
     finally:
         # Teardown/unload cannot become a second write after the return value.
         if read_replaced:
             for read_guard in read_guards: context.route('**/*', read_guard)
         for guard in guards: context.unroute('**/*', guard)
+

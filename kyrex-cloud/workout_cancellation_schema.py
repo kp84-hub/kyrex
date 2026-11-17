@@ -7,6 +7,21 @@ import member_bookings_schema as member
 import workout_booking_schema as workout
 
 
+def browser_problem(exc):
+    """Fixed stage/structural evidence; never expose exception or portal text."""
+    detail = workout.browser_failure(exc)
+    if isinstance(exc, member.ReadFailure):
+        message = member.failure_message(member.failure(exc))
+    elif detail['phase'] == 'cancel_profile':
+        message = ('Kyrex could not access a supported cancellation control on the website. '
+            'Use the Glofox app to cancel for now.')
+    else:
+        message = 'The portal cancellation could not be verified.'
+    return (message + ' Failed while ' + workout.FAILURE_PHASES[detail['phase']] + '.'
+        + ' ' + detail['error_type'] + ' at ' + detail['location'] + '.'
+        + ' No cancellation was submitted.')
+
+
 def request(url, method, body, identity, reference):
     if (not isinstance(reference, str) or not re.fullmatch(r'[a-f0-9]{24}', reference)
             or url != 'https://api.glofox.com/2.0/bookings/' + reference
@@ -76,3 +91,4 @@ def label(details):
 
 def confirmed(data):
     return f"Glofox confirmed cancellation of **{label(data['details'])}**. Reservation reference: **{data['details']['reference']}**."
+
