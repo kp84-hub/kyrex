@@ -181,7 +181,7 @@ def test_session_refresh_does_not_override_owner_host_permissions(browser):
     with pytest.raises(schema.ReadFailure) as error:
         run(browser, allowlist=list(schema.HOSTS))
     assert error.value.code == 'refresh_blocked'
-    assert not any(method == 'POST' for method, _ in browser[1]['requests'])
+    assert not browser[1]['requests']
 
 
 def test_native_refresh_cannot_redirect_its_body_into_a_booking(browser):

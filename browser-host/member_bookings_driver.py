@@ -25,6 +25,8 @@ def run(driver, proto, spec, *, allowlist, expected_request=None, guard_sink=Non
     context, page = driver._context, driver._page
     if context.service_workers or not allowed(schema.URL):
         raise ValueError('Member bookings require a managed, read-only browser session.')
+    if not allowed(schema.REFRESH_URL):
+        raise schema.ReadFailure('refresh_blocked')
     if not proto.operation('browser.read', schema.URL, 'Read existing member bookings only', ''):
         raise ValueError('Member bookings read denied.')
     seeds = []

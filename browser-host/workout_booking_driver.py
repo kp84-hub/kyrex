@@ -248,6 +248,12 @@ def _run(driver, proto, spec, *, allowlist, root, guards):
     allowed = lambda url: domain_allowed(url, allowlist)[0]
     if not allowed(schema.URL):
         raise ValueError('Allow the Level 6 booking website in your Browser Bot and Host.')
+    # The portal clears its stored member session when a refresh fails.
+    # Check permissions before opening a page that may immediately refresh.
+    if not allowed(schema.REFRESH_URL):
+        return {'mode': schema.ACTION, 'status': 'error', 'outcome': 'changed',
+                'change_reason': 'session_refresh_blocked',
+                'final_response': schema.REFRESH_PERMISSION_MESSAGE + ' Nothing was booked.'}
     if not proto.operation('browser.booking', spec['id'], 'Inspect the owner-selected Level 6 class', ''):
         raise ValueError('The workout booking is not authorized.')
     if any(urlsplit(w.url).hostname == 'app.glofox.com' for w in driver._context.service_workers):
@@ -260,17 +266,13 @@ def _run(driver, proto, spec, *, allowlist, root, guards):
     submitted_request = [None]
     before_click = [None]
     changed_reason = [None]
-    refresh_blocked = False
     refresh_rejected = False
 
     def guard(route):
-        nonlocal refresh_blocked
         request = route.request
         if urlsplit(request.url).hostname == schema.REFRESH_HOST:
             if session_refresh(request) or session_refresh_preflight(request):
-                if allowed(request.url):
-                    route.fallback(); return
-                refresh_blocked = True
+                route.fallback(); return
             route.abort(); return
         if request.is_navigation_request() and not allowed(request.url):
             route.abort(); return
@@ -365,9 +367,7 @@ def _run(driver, proto, spec, *, allowlist, root, guards):
         if any(urlsplit(w.url).hostname == 'app.glofox.com' for w in driver._context.service_workers):
             raise ValueError('This portal uses a service worker and needs a verified booking adapter.')
         if session != 'signed_in':
-            if refresh_blocked:
-                message = 'Allow auth.glofox.com in your Browser Bot and Host site permissions so Glofox can renew your saved session.'
-            elif refresh_rejected or session == 'signed_out':
+            if refresh_rejected or session == 'signed_out':
                 message = 'Sign in to your Glofox member account in the Browser Host manual viewer, close the viewer, then ask me again.'
                 if refresh_rejected:
                     message = 'Glofox rejected the saved session. ' + message

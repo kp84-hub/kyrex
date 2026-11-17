@@ -30,6 +30,8 @@ FAILURES = {
     'site_unreachable': ('site_access', 'The browser could not reach the requested website.'),
     'login_required': ('sign_in', 'Sign in through this Browser Bot’s private viewer, then close the viewer.'),
     'session_unverified': ('sign_in', 'The portal did not finish verifying the saved member session. This does not establish that you are signed out.'),
+    'session_refresh_blocked': ('sign_in', 'Allow auth.glofox.com in the Browser Bot and Host site permissions, then run the test again. Kyrex left the saved session alone.'),
+    'session_refresh_rejected': ('sign_in', 'Glofox rejected the saved session. Sign in through this Browser Bot’s private viewer, then end the viewer.'),
     'session_verification_blocked': ('sign_in', 'The read-only test blocked a portal authentication request. Your saved sign-in could not be verified.'),
     'unsupported_portal': ('sign_in', 'The member portal could not be identified; sign-in was not verified.'),
     'failed': ('dispatch', 'The browser step failed. Check its diagnostic in Connections.'),
@@ -100,13 +102,15 @@ def failure(reason):
         (('connection lost', 'connection dropped', 'not connected'), 'connection_lost'),
         (('manualcontrolactive', 'one task at a time', 'browser is busy'), 'profile_busy'),
         (('browser_diagnostic', 'diagnostic capability'), 'host_update_required'),
-        (('allowlist', 'site permissions', 'allow the level 6', 'allow auth.glofox.com'), 'site_permissions'),
+        (('allow auth.glofox.com',), 'session_refresh_blocked'),
+        (('allowlist', 'site permissions', 'allow the level 6'), 'site_permissions'),
         # Booking results use their own mode rather than the probe's structured
         # diagnostic. Classify their fixed session messages at the sign-in
         # stage instead of turning a returned host result into a delivery error.
         (('glofox member session could not be verified',
           'portal did not finish verifying the saved member session'), 'session_unverified'),
         (('read-only test blocked a portal authentication request',), 'session_verification_blocked'),
+        (('glofox rejected the saved session',), 'session_refresh_rejected'),
         (('sign in to your glofox', 'sign in to your member',
           'sign in through this browser bot'), 'login_required'),
         (('failed to start', 'playwright is not available', 'browser launch', 'processsingleton'), 'browser_launch_failed'),
