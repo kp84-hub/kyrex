@@ -1,0 +1,38 @@
+.bot-model-picker {
+  position: relative;
+  min-width: 0;
+}
+
+.bot-model-picker input {
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.bot-model-picker [role="listbox"] {
+  position: absolute;
+  z-index: 2;
+  inset: calc(100% + 4px) 0 auto;
+  max-height: 14rem;
+  overflow: auto;
+  overscroll-behavior: contain;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--bg-elevated);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 20px rgb(0 0 0 / 25%);
+}
+
+.bot-model-picker [role="option"] {
+  padding: 9px 10px;
+  border-radius: 6px;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.bot-model-picker [role="option"]:hover,
+.bot-model-picker [aria-selected="true"] {
+  background: var(--bg-hover);
+}

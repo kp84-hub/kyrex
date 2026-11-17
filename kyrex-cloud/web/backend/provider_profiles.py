@@ -2,13 +2,54 @@
 from __future__ import annotations
 import base64, hashlib, json, os, re
 import threading
+import time
 from functools import wraps
 from pathlib import Path
 from cryptography.fernet import Fernet, InvalidToken
+import httpx
 from paths import data_dir
-from kyrex.opencode_go import go_base, suggestions
+from kyrex.opencode_go import GO_BASE, go_base, suggestions
 
 _PROFILE_LOCK = threading.RLock()
+_GO_CATALOG_LOCK = threading.Lock()
+_go_catalog = None
+_go_catalog_expires = 0
+_GO_MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}")
+
+
+def _fetch_go_catalog() -> list[str]:
+    # Public provider metadata. The request carries no profile or credentials.
+    with httpx.Client(timeout=3, follow_redirects=False) as client:
+        with client.stream("GET", GO_BASE + "/models") as response:
+            response.raise_for_status()
+            payload = bytearray()
+            for part in response.iter_bytes():
+                if len(payload) + len(part) > 1024 * 1024:
+                    raise ValueError("OpenCode Go catalog exceeded its size limit")
+                payload.extend(part)
+    data = json.loads(payload).get("data")
+    if not isinstance(data, list) or not 0 < len(data) <= 1024:
+        raise ValueError("Invalid OpenCode Go catalog")
+    models = dict.fromkeys(entry["id"] for entry in data
+                           if isinstance(entry, dict) and isinstance(entry.get("id"), str)
+                           and _GO_MODEL_ID.fullmatch(entry["id"]))
+    if not models:
+        raise ValueError("OpenCode Go catalog contained no model IDs")
+    return list(models)
+
+
+def go_model_catalog() -> list[str]:
+    """Cache public IDs across pickers; an empty list leaves profile suggestions in place."""
+    global _go_catalog, _go_catalog_expires
+    with _GO_CATALOG_LOCK:
+        if time.monotonic() >= _go_catalog_expires:
+            try:
+                _go_catalog = _fetch_go_catalog()
+            except (httpx.HTTPError, ValueError, AttributeError):
+                _go_catalog_expires = time.monotonic() + 60
+            else:
+                _go_catalog_expires = time.monotonic() + 3600
+        return list(_go_catalog or ())
 
 def _locked(function):
     @wraps(function)
@@ -85,6 +126,7 @@ def public_profile(profile: dict) -> dict:
         "name": profile.get("name"),
         "provider": profile.get("provider"),
         "base_url": profile.get("base_url"),
+        "opencode_go": bool(go_base(profile.get("base_url"))),
         "models": suggestions(profile.get("base_url"), profile.get("models") or []),
         "aliases": list(profile.get("aliases") or []),
         "has_api_key": bool(profile.get("api_key")),

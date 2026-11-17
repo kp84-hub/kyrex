@@ -1,5 +1,6 @@
 import DeveloperRepository from './DeveloperRepository.jsx';
 import BotModelCheck from './BotModelCheck.jsx';
+import BotModelPicker from './BotModelPicker.jsx';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   bindBotBrowserHost, changeBotCapability, claimBot, configureBot,
@@ -1320,22 +1321,16 @@ export default function BotSettings({ bots = [], onClose, onChanged, reviewBotId
 
           <div className="bot-config-field">
             <label htmlFor="create-bot-model">Model</label>
-            <input
+            <BotModelPicker
               id="create-bot-model"
-              type="text"
-              list={`create-bot-models-${createDraft.provider_profile_id || 'none'}`}
-              placeholder="Paste a model ID, e.g. provider/model-name"
+              profile={profiles.find(p => p.id === createDraft.provider_profile_id)}
               value={createDraft.model}
-              onChange={(e) => setCreateDraft({ ...createDraft, model: e.target.value })}
+              onChange={model => setCreateDraft(draft => ({ ...draft, model }))}
             />
-            <datalist id={`create-bot-models-${createDraft.provider_profile_id || 'none'}`}>
-              {((profiles.find((p) => p.id === createDraft.provider_profile_id) || {}).models || [])
-                .map((m) => <option key={m} value={m} />)}
-            </datalist>
             <span className="bot-config-hint">
               {profiles.length === 0
                 ? 'No provider profile yet — add one under Provider settings. A Bot with no profile and no model cannot serve turns.'
-                : `Using ${profileLabel(profiles, createDraft.provider_profile_id)}. Choose a suggestion or paste a model ID supported by this provider.`}
+                : `Using ${profileLabel(profiles, createDraft.provider_profile_id)}.`}
             </span>
           </div>
 
@@ -1807,23 +1802,13 @@ export default function BotSettings({ bots = [], onClose, onChanged, reviewBotId
                   </div>
                   <div className="bot-config-field">
                     <label htmlFor={`llm-model-${bot.id}`}>Model</label>
-                    <input
+                    <BotModelPicker
                       id={`llm-model-${bot.id}`}
-                      type="text"
-                      list={`llm-models-${bot.id}`}
+                      profile={profile}
                       disabled={!profile}
-                      placeholder="Paste a model ID, e.g. provider/model-name"
                       value={llmDraft.model}
-                      onChange={(e) => setLlmDraft({ ...llmDraft, model: e.target.value })}
+                      onChange={model => setLlmDraft(draft => ({ ...draft, model }))}
                     />
-                    <datalist id={`llm-models-${bot.id}`}>
-                      {(profile ? profile.models : []).map((m) => (
-                        <option key={m} value={m} />
-                      ))}
-                    </datalist>
-                    <span className="bot-config-hint">
-                      Choose a suggestion or paste the exact model ID supported by this provider.
-                    </span>
                   </div>
                   <button
                     type="button"

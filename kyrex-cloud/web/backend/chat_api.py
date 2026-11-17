@@ -2413,6 +2413,11 @@ def provider_profiles_list(request: Request):
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
 
+@router.get("/api/chat/provider-profiles/opencode-go/models")
+def provider_go_models(request: Request):
+    _require_user(request)
+    return {"models": provider_profiles.go_model_catalog()}
+
 @router.post("/api/chat/provider-profiles")
 async def provider_profiles_save(request: Request):
     user = _require_user(request)

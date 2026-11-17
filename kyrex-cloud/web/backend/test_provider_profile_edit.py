@@ -1,5 +1,6 @@
 import json
 
+import httpx
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
@@ -43,6 +44,44 @@ def test_edit_preserves_saved_key_and_omitted_header_values(client):
     assert saved['name'] == 'Renamed OpenCode' and saved['base_url'].endswith('/inference/go/v1')
     assert result.json()['id'] == 'opencode'
     assert KEY not in result.text and SECRET_HEADER not in result.text
+
+
+def test_go_catalog_uses_public_endpoint_and_keeps_last_success(client, monkeypatch):
+    http, _ = client
+    requests = []
+    status = [200]
+    ticks = [10]
+    real_client = httpx.Client
+
+    def upstream(request):
+        requests.append(request)
+        return httpx.Response(status[0], json={'data': [
+            {'id': 'kimi-k3.1-pro', 'private_metadata': 'ignored'},
+            {'id': 'kimi-k3.1-pro'}, {'id': 'invalid with spaces'},
+        ]})
+
+    monkeypatch.setattr(provider_profiles.httpx, 'Client', lambda **kwargs:
+                        real_client(transport=httpx.MockTransport(upstream), **kwargs))
+    monkeypatch.setattr(provider_profiles, 'time', type('Clock', (), {'monotonic': lambda: ticks[0]}))
+    monkeypatch.setattr(provider_profiles, '_go_catalog', None)
+    monkeypatch.setattr(provider_profiles, '_go_catalog_expires', 0)
+    path = '/api/chat/provider-profiles/opencode-go/models'
+    assert http.get(path).status_code == 401
+    status[0] = 503
+    assert http.get(path, headers={'x-owner': 'alice'}).json() == {'models': []}
+    status[0] = 200
+    ticks[0] += 60
+    expected = {'models': ['kimi-k3.1-pro']}
+    assert http.get(path, headers={'x-owner': 'alice'}).json() == expected
+    assert http.get(path, headers={'x-owner': 'bob'}).json() == expected
+    assert len(requests) == 2
+    ticks[0] += 3600
+    status[0] = 503
+    assert http.get(path, headers={'x-owner': 'alice'}).json() == expected
+    assert len(requests) == 3
+    assert all(str(req.url) == 'https://opencode.ai/inference/go/v1/models'
+               and 'authorization' not in req.headers and KEY not in str(req.headers)
+               and SECRET_HEADER not in str(req.headers) for req in requests)
 
 
 def test_explicit_empty_headers_clear_bad_values_without_changing_key_or_identity(client):
