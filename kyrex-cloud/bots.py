@@ -16,6 +16,7 @@ The data root is read from the ``KYREX_DATA_DIR`` environment variable via
 """
 
 import json
+import logging
 import os
 import re
 import tempfile
@@ -26,6 +27,8 @@ from pathlib import Path
 from paths import DATA_DIR
 
 BOTS_FILE = str(DATA_DIR / "bots.json")
+_REGISTRY_HISTORY_LIMIT = 32
+_log = logging.getLogger(__name__)
 
 # Serialises EVERY read-modify-write of the registry (add_bot, update_bot,
 # set_status, remove_bot, claim_bot) so no two writers can interleave between
@@ -254,6 +257,37 @@ def load_bots() -> dict[str, dict]:
     return dict(data)
 
 
+def _backup_registry(target: Path, replacement: Path) -> Path | None:
+    try:
+        previous = target.read_bytes()
+    except FileNotFoundError:
+        return None
+    if previous == replacement.read_bytes():
+        return None
+
+    history = target.with_name(target.name + ".history")
+    history.mkdir(mode=0o700, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    fd, name = tempfile.mkstemp(dir=history, prefix=".snapshot-")
+    pending = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(previous)
+            handle.flush()
+            os.fsync(handle.fileno())
+        snapshot = history / f"{stamp}-{pending.name.removeprefix('.snapshot-')}.json"
+        os.replace(pending, snapshot)
+    finally:
+        pending.unlink(missing_ok=True)
+    if hasattr(os, "O_DIRECTORY"):
+        directory_fd = os.open(history, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    return history
+
+
 def save_bots(bots: dict[str, dict]) -> None:
     """Write the bots registry to BOTS_FILE as JSON, atomically.
 
@@ -266,6 +300,7 @@ def save_bots(bots: dict[str, dict]) -> None:
 
     The temporary file is removed if the write fails, so a failed save never
     leaves a stray artifact behind. An existing registry keeps its file mode.
+    Changed saves preserve the preceding registry in a private, bounded history.
     """
     _ensure_dir()
     target = Path(BOTS_FILE)
@@ -290,6 +325,7 @@ def save_bots(bots: dict[str, dict]) -> None:
             mode = None
         if mode is not None:
             os.chmod(tmp_path, mode)
+        history = _backup_registry(target, tmp_path)
         os.replace(tmp_path, target)
     except BaseException:
         # Never leave the temporary file behind on failure.
@@ -298,6 +334,12 @@ def save_bots(bots: dict[str, dict]) -> None:
         except OSError:
             pass
         raise
+    if history is not None:
+        try:
+            for old in sorted(history.glob("*.json"))[:-_REGISTRY_HISTORY_LIMIT]:
+                old.unlink(missing_ok=True)
+        except OSError:
+            _log.warning("Could not prune Bot registry history", exc_info=True)
 
 
 def get_bot(bot_id: str) -> dict:
