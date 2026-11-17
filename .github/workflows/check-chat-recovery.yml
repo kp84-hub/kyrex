@@ -55,6 +55,7 @@ jobs:
           ./tests/voiceInterrupt.test.mjs
           ./tests/voiceHandoff.test.mjs ./tests/voiceControls.test.mjs ./tests/voiceModeButton.test.mjs ./tests/onboarding.test.mjs ./tests/botModelCheck.test.mjs
           ./tests/botRosterRefresh.test.mjs
+          ./tests/botModelPicker.test.mjs
           ./tests/botConversationNavigation.test.mjs
           ./tests/providerProfileEdit.test.mjs
           ./tests/privacySettings.test.mjs ./tests/trainerMonitorSettings.test.mjs

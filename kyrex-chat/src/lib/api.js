@@ -381,6 +381,11 @@ export async function listProviderProfiles() {
   return data.profiles || [];
 }
 
+export async function listOpenCodeGoModels() {
+  const data = await handle(await fetch(BASE + '/chat/provider-profiles/opencode-go/models'));
+  return data.models || [];
+}
+
 export async function saveProviderProfile(profile) {
   return handle(await fetch(BASE + '/chat/provider-profiles', {
     method: 'POST',
