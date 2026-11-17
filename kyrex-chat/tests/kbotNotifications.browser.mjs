@@ -24,6 +24,14 @@ const server = createServer(async (req, res) => {
     let data = {};
     if (url.pathname === '/api/chat/onboarding') data = { required: false };
     else if (url.pathname === '/api/notifications') data = { notifications: items(), unread: read ? 7 : 8 };
+    else if (req.method === 'POST' && url.pathname === '/api/notifications/presence') {
+      let body = ''; for await (const chunk of req) body += chunk;
+      const { tab, sequence, visible } = JSON.parse(body);
+      assert.match(tab, /^[a-f0-9]{32}$/);
+      assert.ok(Number.isInteger(sequence) && sequence > 0);
+      assert.equal(typeof visible, 'boolean');
+      data = { ok: true };
+    }
     else if (url.pathname === '/api/notifications/' + id) data = items()[0];
     else if (url.pathname === '/api/notifications/read') {
       let body = ''; for await (const chunk of req) body += chunk;
@@ -94,7 +102,10 @@ try {
   assert.equal(commands.filter(([name]) => name === 'open_chat').length, 1);
   assert.ok(!commands.some(([name]) => name === 'toggle_chat'));
   assert.equal(read, false, 'Holding Kbot only reads the inbox list');
-  assert.ok(!requests.some(([method]) => method === 'POST'));
+  // Focus changes report presence. Opening the inbox must still leave
+  // notification read state, approvals, tasks and chat messages untouched.
+  assert.deepEqual(requests.filter(([method, path]) =>
+    method === 'POST' && path !== '/api/notifications/presence'), []);
   assert.ok(!requests.some(([, path]) => /\/devices\/|\/settings$/.test(path)));
   assert.ok(await chat.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   await inbox.evaluate(el => { el.scrollTop = el.scrollHeight; });
