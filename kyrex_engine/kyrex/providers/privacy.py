@@ -229,14 +229,19 @@ def safe_provider_error(error: Exception) -> str:
     if isinstance(status, int) and 400 <= status <= 599:
         # Native Gemini retains only these allowlisted upstream machine codes.
         # Re-check the class and value here; never trust arbitrary exception text.
-        from .opencode_gemini import GeminiHTTPError
+        from .opencode_gemini import GeminiHTTPError, SAFE_ERROR_CODES, REQUEST_ID_RE
         if isinstance(error, GeminiHTTPError):
             code = error.gemini_error_code
             if code == 'inference_failed':
-                return f'OpenCode could not run the Gemini request (HTTP {status}; inference_failed). The gateway did not provide a specific cause.'
-            if code in {'INVALID_ARGUMENT', 'NOT_FOUND', 'PERMISSION_DENIED',
-                        'UNAUTHENTICATED', 'RESOURCE_EXHAUSTED', 'UNAVAILABLE'}:
-                return explanations.get(status, 'Provider request failed. Try again later.') + f' (HTTP {status}; {code})'
+                message = f'OpenCode could not run the Gemini request (HTTP {status}; inference_failed). The gateway did not provide a specific cause.'
+            elif isinstance(code, str) and code in SAFE_ERROR_CODES:
+                message = f'OpenCode rejected the Gemini request (HTTP {status}; {code}).'
+            else:
+                message = f'OpenCode rejected the Gemini request (HTTP {status}). The response did not identify a safe, specific cause.'
+            request_id = error.request_id
+            if isinstance(request_id, str) and REQUEST_ID_RE.fullmatch(request_id):
+                message += ' Request ID: ' + request_id + '.'
+            return message
         return explanations.get(status, "Provider request failed. Try again later.") + f" (HTTP {status})"
     kind = type(error).__name__
     if kind in {"APITimeoutError", "TimeoutError", "ReadTimeout", "ConnectTimeout"}:
