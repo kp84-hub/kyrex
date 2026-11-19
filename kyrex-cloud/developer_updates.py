@@ -1,7 +1,7 @@
 """Owner-facing developer activity and verification, without raw tool output."""
 import re
 
-DEVELOPER_EXECUTORS = {"developer", "repo"}
+DEVELOPER_EXECUTORS = {"developer", "repo", "rift_sandbox"}
 _CHECK_COMMANDS = {
     "tests": r"(?:pytest|python3? -m (?:pytest|unittest)|npm (?:run )?test|pnpm (?:run )?test|yarn test|go test|cargo test|node --test|npx (?:playwright test|vitest run))",
     "build": r"(?:(?:npm|pnpm|yarn) (?:run )?build|go build|cargo build|vite build|npx vite build)",

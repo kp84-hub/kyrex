@@ -113,3 +113,24 @@ The runtime workflow builds both Cloud Dockerfile targets and executes small
 Python, npm and Go suites in the resulting containers with networking disabled.
 This does not claim that every project, native desktop target or external
 integration can build on this Linux host.
+
+## On-demand Railway Sandbox pilot
+
+Set `KYREX_RIFT_SANDBOX_OWNER` to the pilot account, `KYREX_RIFT_SANDBOX_ENVIRONMENT_ID`
+to a dedicated Railway sandbox environment, and `KYREX_RIFT_SANDBOX_TOKEN` to a
+project token for that environment. Set them on the trusted Cloud service. Use
+a project token scoped to the pilot environment. Keep the token in deployment
+secrets. These variables are optional for the rest of Kyrex.
+
+Select the public `kp84-hub/kyrex` repo in Developer Bot settings and send
+**Run the tests in a Railway Sandbox** or `/sandbox test` in its chat. The pilot
+runs the Chat sanitizer and streaming smoke tests. It snapshots the Rift when
+the worker claims the task, verifies the exact Git tree in the VM, and returns
+the result and tree identity in the same conversation. Live progress contains
+stage summaries. Use **Stop** to cancel; closing Chat leaves the task running.
+
+Each request creates one VM with outbound internet, blocked access to Railway's
+private network, a two-minute idle timeout, and explicit teardown. It transfers
+the eligible Git diff and fetches the pinned base from the public repo. Review
+and publication still go through the existing repository controls.
+[Railway Sandbox docs](https://docs.railway.com/sandboxes)

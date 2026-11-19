@@ -947,7 +947,7 @@ class EngineSession:
 
         env = os.environ.copy()
         for name in tuple(env):
-            if name.startswith('KYREX_PLAID_'): env.pop(name)
+            if name.startswith(('KYREX_PLAID_', 'KYREX_RIFT_SANDBOX_')): env.pop(name)
         env.pop('GOOGLE_MAPS_API_KEY', None)  # Maps calls belong to the host, never the engine.
         env["KYREX_SURFACE"] = "Kyrex Chat"
         env["KYREX_READ_ONLY_REPO"] = "1"
@@ -4670,6 +4670,34 @@ async def stream_chat(
         if not conv.get('bot_id') or not is_read_request(user_content):
             raise ChatUnavailable("Fitness delegation only serves a bound Bot's read request.")
     selected_bot = bots.load_bots().get(conv.get('bot_id')) if conv.get('bot_id') else None
+    import rift_sandbox
+    if not fitness_read_only and not image_ids and rift_sandbox.requested(user_content):
+        if not selected_bot or selected_bot.get('owner') != user:
+            raise ChatUnavailable('Open your Developer Bot chat to request a Railway Sandbox test.')
+        if workspace_id is not _WORKSPACE_UNSET and str(workspace_id or '').strip():
+            raise ChatUnavailable('Use the repository selected in Developer Bot settings.')
+        identity = turn_user_identity or f'turn-{uuid.uuid4().hex}-user'
+        task_id = 'rift-sandbox-' + hashlib.sha256(
+            json.dumps([user, conversation_id, identity]).encode()).hexdigest()[:32]
+        store = _task_store()
+        with _bot_conversation_lock(user, 'rift-sandbox:' + conversation_id):
+            conv = get_conversation(user, conversation_id)
+            if not conv or conv.get('bot_id') != selected_bot['id']:
+                raise ChatUnavailable('Reopen your Developer Bot chat and try again.')
+            prior = next((m for m in conv['messages'] if m.get('id') == identity), None)
+            if prior and prior.get('content') != user_content:
+                raise ChatUnavailable('This request ID already belongs to a different message.')
+            try:
+                rift_sandbox.submit(user, selected_bot, conversation_id, task_id, store)
+            except rift_sandbox.SandboxError as exc:
+                raise ChatUnavailable(str(exc)) from None
+            _append_message(user, conv, 'user', user_content, identity=identity)
+            _write(user, conv)
+        async with contextlib.aclosing(_stream_existing_bot_task(
+                user, conv, store, task_id, cancel_event, conversation_id=conversation_id)) as frames:
+            async for frame in frames:
+                yield frame
+        return
     dev_action = None
     if (not fitness_read_only and not image_ids and selected_bot and selected_bot.get('owner') == user
             and serve.coordinator_granted(selected_bot)):

@@ -126,6 +126,7 @@ jobs:
           kyrex-cloud/test_developer_completion.py
           kyrex-cloud/test_developer_github_reads.py
           kyrex-cloud/web/backend/test_developer_progress_chat.py
+          kyrex-cloud/web/backend/test_rift_sandbox.py
           kyrex-cloud/web/backend/test_developer_delegation_conversations.py
           kyrex-cloud/web/backend/test_chat_bot_task_routing.py
       - name: Check bounded developer tools and write review
