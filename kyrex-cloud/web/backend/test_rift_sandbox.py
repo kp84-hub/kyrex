@@ -38,6 +38,7 @@ def pilot(tmp_path, monkeypatch):
         db.execute('INSERT INTO workspaces VALUES (?,?,?,?,?,?)',
                    ('alice', 'dev', rift_sandbox.REPOSITORY, str(root), 'main', base))
     monkeypatch.setattr(rift_sandbox, 'RepositoryWorkspaces', lambda: workspaces)
+    monkeypatch.setattr(rift_sandbox, '_fetch_public_head', lambda _root: {})
     return data, root, base, bot, workspaces
 
 
@@ -175,7 +176,7 @@ def test_source_references_pass_but_blocked_changes_identify_only_the_safe_path(
         rift_sandbox._snapshot(workspaces, current)
 
 
-def test_published_workflows_added_to_older_rift_keep_credential_checks(pilot, tmp_path, monkeypatch):
+def test_published_source_in_older_rift_keeps_credential_checks(pilot, tmp_path, monkeypatch):
     _, root, base, bot, workspaces = pilot
     monkeypatch.delenv('WEB_SESSION_SECRET', raising=False)
     monkeypatch.delenv('GITHUB_CLIENT_SECRET', raising=False)
@@ -184,12 +185,35 @@ def test_published_workflows_added_to_older_rift_keep_credential_checks(pilot, t
     git(None, 'clone', '-q', '--no-local', str(root), str(replica))
     destination = root / '.github' / 'workflows'
     destination.mkdir(parents=True)
-    published = Path(rift_sandbox.__file__).resolve().parents[1] / '.github' / 'workflows'
-    for path in published.glob('*.yml'):
-        (destination / path.name).write_bytes(path.read_bytes())
+    published = Path(rift_sandbox.__file__).resolve().parents[1]
+    paths = [path.relative_to(published) for path in (published / '.github' / 'workflows').glob('*.yml')]
+    paths.extend(Path('browser-host') / name for name in (
+        'test_browser_diagnostic_driver.py', 'test_browser_reconnect.py',
+        'test_member_bookings_driver.py', 'test_profile_identity.py', 'test_workout_booking_driver.py',
+    ))
+    reference = tmp_path / 'published'
+    reference.mkdir()
+    git(reference, 'init', '-q')
+    for path in paths:
+        for checkout in (root, reference):
+            file = checkout / path
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_bytes((published / path).read_bytes())
+    git(reference, 'add', '.')
+    git(reference, '-c', 'user.name=Test', '-c', 'user.email=test@example.test',
+        'commit', '-qm', 'published fixtures')
+    public_sha = git(reference, 'rev-parse', 'HEAD').decode().strip()
+    fetches = []
+
+    def fetch_public(_root):
+        fetches.append(True)
+        return {'path': reference, 'base_sha': public_sha}
+
+    monkeypatch.setattr(rift_sandbox, '_fetch_public_head', fetch_public)
 
     snapshot_base, tree, patch = rift_sandbox._snapshot(workspaces, current)
     assert snapshot_base == base
+    assert len(fetches) == 1
     git(replica, 'apply', '--index', '--binary', '-', data=patch)
     assert git(replica, 'write-tree').decode().strip() == tree
 
@@ -208,7 +232,7 @@ def test_published_workflows_added_to_older_rift_keep_credential_checks(pilot, t
     desktop.write_text(original)
     other.unlink()
     monkeypatch.setenv('GITHUB_CLIENT_SECRET', 'test-secret')
-    with pytest.raises(rift_sandbox.SandboxError, match='build-chat-desktop.yml'):
+    with pytest.raises(rift_sandbox.SandboxError, match=r'build-chat-desktop.yml.*configured credential'):
         rift_sandbox._snapshot(workspaces, current)
 
 

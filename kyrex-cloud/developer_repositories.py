@@ -82,7 +82,7 @@ def write_api(token, path, values):
         raise GitHubError('GitHub publishing did not return a confirmed result. Check GitHub before trying again.') from None
 
 
-def git(root, *args, env=None, data=None):
+def git(root, *args, env=None, data=None, timeout=180):
     # Do not inherit global provider/GitHub credentials or git config. Built-in
     # operations only; no hooks, external diff, filters or submodule commands.
     clean = {'PATH': os.defpath, 'LANG': 'C.UTF-8',
@@ -92,7 +92,7 @@ def git(root, *args, env=None, data=None):
     try:
         result = subprocess.run(['git', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false',
             '-c', 'credential.helper=', '-c', 'http.followRedirects=false', *args],
-            cwd=root, input=data, env=clean, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
+            cwd=root, input=data, env=clean, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired):
         raise GitHubError('Repository operation could not finish. Your existing workspace was preserved.') from None
     if result.returncode:

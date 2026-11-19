@@ -29,17 +29,6 @@ _WORKFLOW_SECRET_REFERENCE = re.compile(
     r'(?:secrets\.[A-Za-z_][A-Za-z0-9_]*|github\.token)[ \t]*\}\}\2[ \t]*\r?$)',
     re.MULTILINE,
 )
-# Exact, public values used by CI test jobs. Keep each exception tied to its
-# workflow, environment variable, and literal value.
-_WORKFLOW_TEST_FIXTURES = {
-    'build-chat-desktop.yml': ('GITHUB_CLIENT_SECRET', 'test-secret'),
-    'check-accounts.yml': ('WEB_SESSION_SECRET', 'account-ci-only'),
-    'check-android-chat.yml': ('WEB_SESSION_SECRET', 'android-chat-ci-only'),
-    'check-booking-flow.yml': ('WEB_SESSION_SECRET', 'booking-workflow-ci-only'),
-    'check-chat-notifications.yml': ('WEB_SESSION_SECRET', 'notification-ci-only'),
-    'check-composio.yml': ('WEB_SESSION_SECRET', 'composio-ci-offline-only'),
-    'check-job-contracts.yml': ('WEB_SESSION_SECRET', 'job-contract-ci-only'),
-}
 _JS_ENV_REFERENCE = re.compile(
     r'^([ \t]*(?:(?:export|const|let|var)[ \t]+)*[A-Za-z_][A-Za-z0-9_]*[ \t]*)='
     r'(?=[ \t]*process\.env(?:\.[A-Za-z_][A-Za-z0-9_]*|'
@@ -137,11 +126,6 @@ def _source_findings(privacy, path, data):
         source = _SHELL_ENV_REFERENCE.sub(r'\1 ', source)
     if path.startswith('.github/workflows/'):
         source = _WORKFLOW_SECRET_REFERENCE.sub(r'\1 ', source)
-        fixture = _WORKFLOW_TEST_FIXTURES.get(path.removeprefix('.github/workflows/'))
-        if fixture:
-            key, value = map(re.escape, fixture)
-            source = re.sub(rf'^([ \t]*{key}):(?=[ \t]+([\'\"]?){value}\2[ \t]*\r?$)',
-                            r'\1 ', source, flags=re.MULTILINE)
     if suffix in {'.ts', '.tsx', '.cts', '.mts'}:
         source = _TYPESCRIPT_FIELD.sub(r'\1 ', source)
     if path.rsplit('/', 1)[-1] in {'.env.example', '.env.sample', '.env.template'}:
@@ -156,16 +140,31 @@ def _source_findings(privacy, path, data):
                    if line != masked)
 
 
-def _in_public_base(current, path, privacy, findings):
-    # The runner independently fetches this exact public commit before
-    # uploading the patch. Ignore local replacement refs when reading it.
-    blob = current['base_sha'] + ':' + path
+def _fetch_public_head(root):
+    """Fetch the public default branch without workspace config or credentials."""
     try:
-        root = current['path']
+        git(root, 'init', '--bare', '--quiet', '--template=')
+        git(root, '-c', 'protocol.ext.allow=never', '-c', 'protocol.file.allow=never',
+            'fetch', '--quiet', '--no-tags', '--no-recurse-submodules', '--depth=1', '--',
+            f'https://github.com/{REPOSITORY}.git', 'refs/heads/main', timeout=30)
+        head = git(root, 'rev-parse', '--verify', 'FETCH_HEAD^{commit}').decode().strip()
+    except GitHubError:
+        return {}
+    return {'path': root, 'base_sha': head}
+
+
+def _in_public_reference(reference, path, privacy, data, findings):
+    blob = reference['base_sha'] + ':' + path
+    try:
+        root = reference['path']
         if int(git(root, '--no-replace-objects', 'cat-file', '-s', blob)) > SANDBOX_MAX_BYTES:
             return False
         original = git(root, '--no-replace-objects', 'cat-file', 'blob', blob)
     except GitHubError:
+        return False
+    if original == data:
+        return True
+    if findings is None:
         return False
     baseline = _source_findings(privacy, path, original)
     return baseline is not None and findings <= baseline
@@ -184,20 +183,30 @@ def _snapshot(workspaces, current):
     sensitive_reason = runpy.run_path(str(_ROOT.parent / 'scripts/check_sensitive_paths.py'))['sensitive_reason']
     privacy = SecretFilter()
     blocked = []
-    for entry in entries:
-        if 'data' not in entry:
-            continue
-        path = entry['path']
-        if sensitive_reason(path):
-            reason = 'protected file path'
-        else:
-            findings = _source_findings(privacy, path, entry['data'])
-            if findings is not None and (not findings or _in_public_base(current, path, privacy, findings)):
+    public_head = None
+    with tempfile.TemporaryDirectory(prefix='kyrex-public-reference-') as reference_dir:
+        for entry in entries:
+            if 'data' not in entry:
                 continue
-            reason = 'possible credential or private identifier'
-        blocked.append(_blocked_file(privacy, path, reason))
-        if len(blocked) == 5:
-            break
+            path, data = entry['path'], entry['data']
+            if sensitive_reason(path):
+                reason = 'protected file path'
+            elif privacy.contains_configured_secret(data):
+                reason = 'configured credential'
+            else:
+                findings = _source_findings(privacy, path, data)
+                # The runner verifies the pinned public base before uploading.
+                if (findings is not None and not findings) or _in_public_reference(
+                        current, path, privacy, data, findings):
+                    continue
+                if public_head is None:
+                    public_head = _fetch_public_head(reference_dir)
+                if public_head and _in_public_reference(public_head, path, privacy, data, findings):
+                    continue
+                reason = 'possible credential or private identifier'
+            blocked.append(_blocked_file(privacy, path, reason))
+            if len(blocked) == 5:
+                break
     if blocked:
         raise SandboxError('The Rift snapshot includes a sensitive change in ' + ', '.join(blocked)
                            + '. No files were sent to Railway.')

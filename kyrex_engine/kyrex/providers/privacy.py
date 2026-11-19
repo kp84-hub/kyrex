@@ -86,6 +86,9 @@ class SecretFilter:
         values.extend(v for v in secrets if isinstance(v, str) and len(v) >= 8)
         self._secrets = tuple(sorted(set(values), key=len, reverse=True))
 
+    def contains_configured_secret(self, data: bytes) -> bool:
+        return any(os.fsencode(secret) in data for secret in self._secrets)
+
     def text(self, value: str) -> str:
         # Parse before replacing numeric values so JSON argument/result strings
         # stay valid even when a sensitive field contains a JSON number.
