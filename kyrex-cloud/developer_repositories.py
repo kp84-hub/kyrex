@@ -446,19 +446,21 @@ class RepositoryWorkspaces:
         return tree, names
 
     def snapshot(self, current, *, for_publish=True):
-        tree, diff, entries = self._snapshot(current, for_publish=for_publish)
+        tree, diff, entries = self._snapshot(current, purpose='publish' if for_publish else 'preview')
         return tree, diff.decode('utf-8', errors='replace'), entries
 
     def sandbox_snapshot(self, current):
         """Build a bounded, byte-exact patch and the blobs to scan before upload."""
-        return self._snapshot(current, for_publish=True, sandbox=True)
+        return self._snapshot(current, purpose='sandbox')
 
-    def _snapshot(self, current, *, for_publish, sandbox=False):
+    def _snapshot(self, current, *, purpose):
+        sandbox = purpose == 'sandbox'
+        include_blobs = purpose != 'preview'
         root, base = Path(current['path']), current['base_sha']
         if not SHA.fullmatch(base):
             raise GitHubError('Workspace base is invalid.')
         tree, _ = self.workspace_tree(root)
-        diff_args = ['--binary'] if for_publish else ['--no-renames', '-O/dev/null']
+        diff_args = ['--binary'] if include_blobs else ['--no-renames', '-O/dev/null']
         if sandbox:
             diff_args.append('--no-renames')
         diff = git(root, 'diff', '--no-ext-diff', '--no-textconv', '--no-color', '--no-relative',
@@ -478,7 +480,7 @@ class RepositoryWorkspaces:
             meta, raw = changed[i:i+2]
             old_mode, mode, old_sha, sha, action = meta.decode().split()
             name = raw.decode('utf-8')
-            if for_publish and name.startswith('.github/workflows/'):
+            if purpose == 'publish' and name.startswith('.github/workflows/'):
                 raise GitHubError('Workflow changes require a separate manual GitHub grant.')
             entry = {'path': name, 'mode': mode if mode != '000000' else old_mode[1:], 'type': 'blob'}
             if action == 'D':
@@ -486,7 +488,7 @@ class RepositoryWorkspaces:
             else:
                 if mode not in ('100644', '100755'):
                     raise GitHubError('Symlink and submodule changes need a manual Git workflow.')
-                if for_publish:
+                if include_blobs:
                     blob = tree + ':' + name
                     if sandbox and total + int(git(root, 'cat-file', '-s', blob)) > SANDBOX_MAX_BYTES:
                         raise GitHubError(f'Railway Sandbox testing supports up to {SANDBOX_MAX_BYTES} bytes '
