@@ -133,4 +133,7 @@ Each request creates one VM with outbound internet, blocked access to Railway's
 private network, a two-minute idle timeout, and explicit teardown. It transfers
 the eligible Git patch and fetches the pinned base from the public repo. The
 patch and the total changed file content each have a 16 MiB limit.
+The snapshot can include GitHub Actions files. The runner uses them as source
+files while running the fixed Chat smoke tests. Workflow changes still require a
+manual grant for GitHub publication.
 [Railway Sandbox docs](https://docs.railway.com/sandboxes)

@@ -1,4 +1,5 @@
 """Opt-in Railway verification of the Developer Bot's public Kyrex Rift."""
+from collections import Counter
 import json
 import os
 from pathlib import Path
@@ -9,7 +10,7 @@ import tempfile
 import time
 
 import bots
-from developer_repositories import RepositoryWorkspaces
+from developer_repositories import RepositoryWorkspaces, SANDBOX_MAX_BYTES, git
 from github_connection import GitHubError
 from task_store import CloudTaskStore, DuplicateTaskId, STATUS_RUNNING
 
@@ -22,6 +23,11 @@ _REQUEST = re.compile(
     r'/sandbox test|(?:(?:can|could|would) you )?(?:please )?run '
     r'(?:(?:the|these|kyrex) )?tests? (?:in|on) (?:a |the )?railway sandbox[.!?]?',
     re.I,
+)
+_WORKFLOW_SECRET_REFERENCE = re.compile(
+    r'^([ \t]*[A-Za-z_][A-Za-z0-9_-]*):(?=[ \t]+([\'\"]?)\$\{\{[ \t]*'
+    r'secrets\.[A-Za-z_][A-Za-z0-9_]*[ \t]*\}\}\2[ \t]*\r?$)',
+    re.MULTILINE,
 )
 _ROOT = Path(__file__).resolve().parent
 _STAGES = {
@@ -87,6 +93,37 @@ def submit(owner, bot, conversation, task_id, store):
     return task_id
 
 
+def _source_findings(privacy, path, data):
+    source = data.decode('utf-8', errors='replace')
+    if path.startswith('.github/workflows/'):
+        # The YAML assignment is a reference, but its expression still goes
+        # through the scanner. The exported blob itself is never modified.
+        source = _WORKFLOW_SECRET_REFERENCE.sub(r'\1 ', source)
+    filtered = privacy.text(source)
+    if source == filtered:
+        return Counter()
+    original_lines, filtered_lines = source.split('\n'), filtered.split('\n')
+    if '\ufffd' in source or len(original_lines) != len(filtered_lines):
+        return None
+    return Counter((line, masked) for line, masked in zip(original_lines, filtered_lines)
+                   if line != masked)
+
+
+def _in_public_base(current, path, privacy, findings):
+    # The runner independently fetches this exact public commit before
+    # uploading the patch. Ignore local replacement refs when reading it.
+    blob = current['base_sha'] + ':' + path
+    try:
+        root = current['path']
+        if int(git(root, '--no-replace-objects', 'cat-file', '-s', blob)) > SANDBOX_MAX_BYTES:
+            return False
+        original = git(root, '--no-replace-objects', 'cat-file', 'blob', blob)
+    except GitHubError:
+        return False
+    baseline = _source_findings(privacy, path, original)
+    return baseline is not None and findings <= baseline
+
+
 def _snapshot(workspaces, current):
     from kyrex.providers.privacy import SecretFilter
 
@@ -96,8 +133,11 @@ def _snapshot(workspaces, current):
     for entry in entries:
         if 'data' not in entry:
             continue
-        content = entry['data'].decode('utf-8', errors='replace')
-        if sensitive_reason(entry['path']) or privacy.text(content) != content:
+        path = entry['path']
+        if sensitive_reason(path):
+            raise SandboxError('The Rift snapshot includes a sensitive change and was not sent to Railway.')
+        findings = _source_findings(privacy, path, entry['data'])
+        if findings is None or (findings and not _in_public_base(current, path, privacy, findings)):
             raise SandboxError('The Rift snapshot includes a sensitive change and was not sent to Railway.')
     return current['base_sha'], tree, patch
 

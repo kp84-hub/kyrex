@@ -109,6 +109,34 @@ def test_rift_patch_with_more_than_400_changed_files(pilot, tmp_path):
         workspaces.snapshot(current)
 
 
+def test_workflow_snapshot_runs_with_public_fixture_and_secret_reference(pilot, tmp_path):
+    _, root, _, bot, workspaces = pilot
+    path = '.github/workflows/smoke.yml'
+    workflow = root / path
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text('name: Smoke\nenv:\n  WEB_SESSION_SECRET: example-ci-fixture\n')
+    git(root, 'add', '--', path)
+    git(root, '-c', 'user.name=Test', '-c', 'user.email=test@example.test', 'commit', '-qm', 'public workflow')
+    base = git(root, 'rev-parse', 'HEAD').decode().strip()
+    current = {**workspaces.current('alice', bot), 'base_sha': base}
+    replica = tmp_path / 'fresh'
+    git(None, 'clone', '-q', '--no-local', str(root), str(replica))
+
+    workflow.write_text(workflow.read_text().replace('name: Smoke', 'name: Updated smoke')
+                        + "  GITHUB_CLIENT_SECRET: '${{ secrets.BUILD_CLIENT_SECRET }}'\n")
+    snapshot_base, tree, patch = rift_sandbox._snapshot(workspaces, current)
+    assert snapshot_base == base
+    git(replica, 'apply', '--index', '--binary', '-', data=patch)
+    assert git(replica, 'write-tree').decode().strip() == tree
+    assert (replica / path).read_bytes() == workflow.read_bytes()
+    with pytest.raises(GitHubError, match='separate manual GitHub grant'):
+        workspaces.snapshot(current)
+
+    workflow.write_text(workflow.read_text().replace('example-ci-fixture', 'test-project-token'))
+    with pytest.raises(rift_sandbox.SandboxError, match='sensitive change'):
+        rift_sandbox._snapshot(workspaces, current)
+
+
 def test_chat_retry_runs_once_and_reports_result_in_same_thread(pilot, monkeypatch):
     _, root, base, bot, _ = pilot
     store = task_store.CloudTaskStore()
