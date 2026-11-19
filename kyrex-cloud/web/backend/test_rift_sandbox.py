@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -171,6 +172,43 @@ def test_source_references_pass_but_blocked_changes_identify_only_the_safe_path(
     (root / 'credentials.json').unlink()
     monkeypatch.setenv('TEST_EXACT_TOKEN', 'change-me')
     with pytest.raises(rift_sandbox.SandboxError, match=r"'\.env\.example'"):
+        rift_sandbox._snapshot(workspaces, current)
+
+
+def test_published_workflows_added_to_older_rift_keep_credential_checks(pilot, tmp_path, monkeypatch):
+    _, root, base, bot, workspaces = pilot
+    monkeypatch.delenv('WEB_SESSION_SECRET', raising=False)
+    monkeypatch.delenv('GITHUB_CLIENT_SECRET', raising=False)
+    current = workspaces.current('alice', bot)
+    replica = tmp_path / 'fresh'
+    git(None, 'clone', '-q', '--no-local', str(root), str(replica))
+    destination = root / '.github' / 'workflows'
+    destination.mkdir(parents=True)
+    published = Path(rift_sandbox.__file__).resolve().parents[1] / '.github' / 'workflows'
+    for path in published.glob('*.yml'):
+        (destination / path.name).write_bytes(path.read_bytes())
+
+    snapshot_base, tree, patch = rift_sandbox._snapshot(workspaces, current)
+    assert snapshot_base == base
+    git(replica, 'apply', '--index', '--binary', '-', data=patch)
+    assert git(replica, 'write-tree').decode().strip() == tree
+
+    desktop = destination / 'build-chat-desktop.yml'
+    original = desktop.read_text()
+    desktop.write_text(original.replace('test-secret', 'unexpected-literal-value'))
+    other = destination / 'other.yml'
+    other.write_text('env:\n  GITHUB_CLIENT_SECRET: test-secret\n')
+    with pytest.raises(rift_sandbox.SandboxError) as error:
+        rift_sandbox._snapshot(workspaces, current)
+    message = str(error.value)
+    assert "'.github/workflows/build-chat-desktop.yml'" in message
+    assert "'.github/workflows/other.yml'" in message
+    assert 'unexpected-literal-value' not in message and 'test-secret' not in message
+
+    desktop.write_text(original)
+    other.unlink()
+    monkeypatch.setenv('GITHUB_CLIENT_SECRET', 'test-secret')
+    with pytest.raises(rift_sandbox.SandboxError, match='build-chat-desktop.yml'):
         rift_sandbox._snapshot(workspaces, current)
 
 

@@ -136,6 +136,6 @@ patch and the total changed file content each have a 16 MiB limit.
 The snapshot can include GitHub Actions files. The runner uses them as source
 files while running the fixed Chat smoke tests. Workflow changes still require a
 manual grant for GitHub publication.
-If a file blocks the credential scan, the task reports the first affected
-repository path when the name can be displayed safely. The task omits file contents.
+If files block the credential scan, the task reports up to five affected
+repository paths when their names can be displayed safely. The task omits file contents.
 [Railway Sandbox docs](https://docs.railway.com/sandboxes)

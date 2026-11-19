@@ -29,6 +29,17 @@ _WORKFLOW_SECRET_REFERENCE = re.compile(
     r'(?:secrets\.[A-Za-z_][A-Za-z0-9_]*|github\.token)[ \t]*\}\}\2[ \t]*\r?$)',
     re.MULTILINE,
 )
+# Exact, public values used by CI test jobs. Keep each exception tied to its
+# workflow, environment variable, and literal value.
+_WORKFLOW_TEST_FIXTURES = {
+    'build-chat-desktop.yml': ('GITHUB_CLIENT_SECRET', 'test-secret'),
+    'check-accounts.yml': ('WEB_SESSION_SECRET', 'account-ci-only'),
+    'check-android-chat.yml': ('WEB_SESSION_SECRET', 'android-chat-ci-only'),
+    'check-booking-flow.yml': ('WEB_SESSION_SECRET', 'booking-workflow-ci-only'),
+    'check-chat-notifications.yml': ('WEB_SESSION_SECRET', 'notification-ci-only'),
+    'check-composio.yml': ('WEB_SESSION_SECRET', 'composio-ci-offline-only'),
+    'check-job-contracts.yml': ('WEB_SESSION_SECRET', 'job-contract-ci-only'),
+}
 _JS_ENV_REFERENCE = re.compile(
     r'^([ \t]*(?:(?:export|const|let|var)[ \t]+)*[A-Za-z_][A-Za-z0-9_]*[ \t]*)='
     r'(?=[ \t]*process\.env(?:\.[A-Za-z_][A-Za-z0-9_]*|'
@@ -126,6 +137,11 @@ def _source_findings(privacy, path, data):
         source = _SHELL_ENV_REFERENCE.sub(r'\1 ', source)
     if path.startswith('.github/workflows/'):
         source = _WORKFLOW_SECRET_REFERENCE.sub(r'\1 ', source)
+        fixture = _WORKFLOW_TEST_FIXTURES.get(path.removeprefix('.github/workflows/'))
+        if fixture:
+            key, value = map(re.escape, fixture)
+            source = re.sub(rf'^([ \t]*{key}):(?=[ \t]+([\'\"]?){value}\2[ \t]*\r?$)',
+                            r'\1 ', source, flags=re.MULTILINE)
     if suffix in {'.ts', '.tsx', '.cts', '.mts'}:
         source = _TYPESCRIPT_FIELD.sub(r'\1 ', source)
     if path.rsplit('/', 1)[-1] in {'.env.example', '.env.sample', '.env.template'}:
@@ -155,11 +171,10 @@ def _in_public_base(current, path, privacy, findings):
     return baseline is not None and findings <= baseline
 
 
-def _blocked_snapshot(privacy, path, reason):
-    location = (f' in {path!r}' if _DISPLAY_PATH.fullmatch(path) and privacy.text(path) == path
-                else ' in a file with a redacted name')
-    return SandboxError(f'The Rift snapshot includes a sensitive change{location} ({reason}). '
-                        'No files were sent to Railway.')
+def _blocked_file(privacy, path, reason):
+    location = (repr(path) if _DISPLAY_PATH.fullmatch(path) and privacy.text(path) == path
+                else 'a file with a redacted name')
+    return f'{location} ({reason})'
 
 
 def _snapshot(workspaces, current):
@@ -168,15 +183,24 @@ def _snapshot(workspaces, current):
     tree, patch, entries = workspaces.sandbox_snapshot(current)
     sensitive_reason = runpy.run_path(str(_ROOT.parent / 'scripts/check_sensitive_paths.py'))['sensitive_reason']
     privacy = SecretFilter()
+    blocked = []
     for entry in entries:
         if 'data' not in entry:
             continue
         path = entry['path']
         if sensitive_reason(path):
-            raise _blocked_snapshot(privacy, path, 'protected file path')
-        findings = _source_findings(privacy, path, entry['data'])
-        if findings is None or (findings and not _in_public_base(current, path, privacy, findings)):
-            raise _blocked_snapshot(privacy, path, 'possible credential or private identifier')
+            reason = 'protected file path'
+        else:
+            findings = _source_findings(privacy, path, entry['data'])
+            if findings is not None and (not findings or _in_public_base(current, path, privacy, findings)):
+                continue
+            reason = 'possible credential or private identifier'
+        blocked.append(_blocked_file(privacy, path, reason))
+        if len(blocked) == 5:
+            break
+    if blocked:
+        raise SandboxError('The Rift snapshot includes a sensitive change in ' + ', '.join(blocked)
+                           + '. No files were sent to Railway.')
     return current['base_sha'], tree, patch
 
 
