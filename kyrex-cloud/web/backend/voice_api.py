@@ -305,17 +305,18 @@ async def chat(request: Request):
             async for frame in source:
                 if frame.get('type') == 'delegation':
                     delegated = True
-                if frame.get('type') == 'approval_request' and frame.get('tier') == 2:
-                    if frame.get('delegation_id'):
-                        delegated = True
-                        continue  # Only the current turn's delegation may be offered below.
+                if frame.get('type') == 'approval_request' and frame.get('tier') in (1, 2):
                     row = voice_approval.pending(chat_service._task_store(), user, cid,
                                                  frame.get('task_id'), frame.get('approval_id'))
+                    if frame.get('delegation_id') and (row or frame['tier'] == 2):
+                        delegated = True
+                        continue  # Only the current turn's delegation may be offered below.
                     if row:
                         complete = True
                         yield voice_approval.prompt(devices, user, cid, secret, request_id, row)
                         return  # Detach the viewer. The durable task still awaits approval.
-                    continue
+                    if frame['tier'] == 2:
+                        continue
                 # Native clients may close as soon as they read the final SSE
                 # event. Completion is server evidence, not a further HTTP read.
                 if frame.get('type') == 'status' and frame.get('status') in ('complete', 'error', 'cancelled'):
