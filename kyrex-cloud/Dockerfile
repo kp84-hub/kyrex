@@ -38,6 +38,8 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 
 FROM developer-runtime AS app
 WORKDIR /app
+COPY kyrex-cloud/railway-sandbox/package*.json /app/kyrex-cloud/railway-sandbox/
+RUN npm ci --prefix /app/kyrex-cloud/railway-sandbox --omit=dev --no-audit --no-fund
 COPY . /app
 COPY --from=chatui /chatui/dist /app/kyrex-chat/dist
 

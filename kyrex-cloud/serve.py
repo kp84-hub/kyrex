@@ -5013,6 +5013,11 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
             edit(chat_id, status_msg_id, f"⏳ Working: {task_text}\n{body}")
 
     try:
+        if executor_prefix == 'rift_sandbox':
+            from rift_sandbox import run_task as run_sandbox_test
+            run_sandbox_test(ctx, str(chat_id), task_text, task_id, conversation_id,
+                             on_progress, on_result)
+            return
         if executor_prefix == 'gmail_cleanup':
             from gmail_cleanup import run as run_cleanup
             run_cleanup(ctx,str(chat_id),task_text,task_id,send,on_result=on_result,
@@ -5341,10 +5346,11 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
         bound_bot = bool(str(getattr(ctx, "bot_owner", "") or "").strip())
         # Bank credentials belong only to the host adapter, including for an
         # unbound/operator subprocess that previously inherited the full env.
-        proc_env = ({k: v for k, v in os.environ.items() if not k.startswith('KYREX_PLAID_')}
-                    if any(k.startswith('KYREX_PLAID_') for k in os.environ) else None)
+        host_only = ('KYREX_PLAID_', 'KYREX_RIFT_SANDBOX_')
+        proc_env = ({k: v for k, v in os.environ.items() if not k.startswith(host_only)}
+                    if any(k.startswith(host_only) for k in os.environ) else None)
         if ctx.rift_path is not None or read_only_repo or bound_bot:
-            proc_env = {k: v for k, v in os.environ.items() if not k.startswith('KYREX_PLAID_')}
+            proc_env = {k: v for k, v in os.environ.items() if not k.startswith(host_only)}
             proc_env.pop('KYREX_GITHUB_HOST_BRIDGE', None)
             proc_env.pop('KYREX_CONNECTED_REPOSITORY', None)
             proc_env.pop('KYREX_WORKSPACE_FRESHNESS', None)

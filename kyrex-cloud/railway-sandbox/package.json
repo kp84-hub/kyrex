@@ -1,0 +1,8 @@
+{
+  "name": "kyrex-railway-sandbox",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "railway": "3.17.0"
+  }
+}
