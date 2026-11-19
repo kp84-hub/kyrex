@@ -90,6 +90,25 @@ def test_large_rift_patch_can_run_without_raising_pr_review_limit(pilot, tmp_pat
         rift_sandbox._snapshot(workspaces, current)
 
 
+def test_rift_patch_with_more_than_400_changed_files(pilot, tmp_path):
+    _, root, base, bot, workspaces = pilot
+    replica = tmp_path / 'fresh'
+    git(None, 'clone', '-q', '--no-local', str(root), str(replica))
+    changed = root / 'changed'
+    changed.mkdir()
+    for i in range(425):
+        (changed / f'file-{i}.txt').write_text('ordinary test fixture\n')
+    current = workspaces.current('alice', bot)
+
+    snapshot_base, tree, patch = rift_sandbox._snapshot(workspaces, current)
+    assert snapshot_base == base
+    git(replica, 'apply', '--index', '--binary', '-', data=patch)
+    assert git(replica, 'write-tree').decode().strip() == tree
+    assert len(list((replica / 'changed').iterdir())) == 425
+    with pytest.raises(GitHubError, match='Publish at most 100 changed files'):
+        workspaces.snapshot(current)
+
+
 def test_chat_retry_runs_once_and_reports_result_in_same_thread(pilot, monkeypatch):
     _, root, base, bot, _ = pilot
     store = task_store.CloudTaskStore()

@@ -132,6 +132,5 @@ stage summaries. Use **Stop** to cancel; closing Chat leaves the task running.
 Each request creates one VM with outbound internet, blocked access to Railway's
 private network, a two-minute idle timeout, and explicit teardown. It transfers
 the eligible Git patch and fetches the pinned base from the public repo. The
-sandbox accepts up to 400 changed files, with separate 16 MiB limits for the
-patch and the total changed file content.
+patch and the total changed file content each have a 16 MiB limit.
 [Railway Sandbox docs](https://docs.railway.com/sandboxes)
