@@ -43,15 +43,26 @@ jobs:
           gomobile bind -target=android/arm64 -androidapi=28 -o ../app/libs/pairbridge.aar .
       - name: Prepare verified offline Voice assets
         run: python3 kyrex-voice-android/prepare_assets.py
-      - name: Restore retained test signing key when configured
+      - name: Prepare retained signing key for installable APK
+        id: signing
         env:
           KEYSTORE_B64: ${{ secrets.KYREX_CHAT_ANDROID_KEYSTORE_B64 }}
         run: |
-          if [ -n "$KEYSTORE_B64" ]; then
-            umask 077
-            printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/kyrex-chat-signing.keystore"
-            printf 'KYREX_CHAT_ANDROID_KEYSTORE=%s\n' "$RUNNER_TEMP/kyrex-chat-signing.keystore" >> "$GITHUB_ENV"
+          if [ -z "$KEYSTORE_B64" ]; then
+            printf 'configured=false\n' >> "$GITHUB_OUTPUT"
+            echo '::warning title=Android signing not configured::Tests will run, but no installable APK will be published. Configure KYREX_CHAT_ANDROID_KEYSTORE_B64 with a retained signing key; see kyrex-chat-android/SIGNING.md.'
+            echo '### Android checks only — no installable APK' >> "$GITHUB_STEP_SUMMARY"
+            echo 'A retained signing key is not configured. Temporary debug keys cannot provide compatible app updates. Configure KYREX_CHAT_ANDROID_KEYSTORE_B64 as described in kyrex-chat-android/SIGNING.md, then build again.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
           fi
+          umask 077
+          signing_file="$RUNNER_TEMP/kyrex-chat-signing.keystore"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$signing_file"
+          keytool -list -keystore "$signing_file" -storepass android -alias androiddebugkey > /dev/null
+          printf 'KYREX_CHAT_ANDROID_KEYSTORE=%s\n' "$signing_file" >> "$GITHUB_ENV"
+          printf 'configured=true\n' >> "$GITHUB_OUTPUT"
+          echo '### Android APK uses the retained signing key' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Compare signing-fingerprint.txt with your installed build before assuming an in-place update is possible. See kyrex-chat-android/SIGNING.md for migration and recovery.' >> "$GITHUB_STEP_SUMMARY"
       - name: Test, lint and assemble integrated app
         working-directory: kyrex-chat-android
         env:
@@ -59,6 +70,7 @@ jobs:
           KYREX_CHAT_ORIGIN: ${{ vars.KYREX_ANDROID_CHAT_ORIGIN || 'https://chat.kyrex.dev' }}
         run: gradle --no-daemon -PkyrexChatOrigin="$KYREX_CHAT_ORIGIN" :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
       - name: Record public signing fingerprint
+        if: steps.signing.outputs.configured == 'true'
         run: |
           python - <<'PY'
           import os, re, subprocess
@@ -77,6 +89,7 @@ jobs:
             kyrex-chat-android/app/build/reports/
             kyrex-chat-android/app/build/test-results/
       - uses: actions/upload-artifact@v4
+        if: steps.signing.outputs.configured == 'true'
         with:
           name: Kyrex-Chat-Android-v0.5
           path: |
