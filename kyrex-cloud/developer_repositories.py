@@ -33,6 +33,8 @@ REVIEW = re.compile(r'[0-9a-f]{64}')
 MAX_DIFF = 1_000_000
 MAX_FILES = 100
 MAX_BYTES = 5 * 1024 * 1024
+SANDBOX_MAX_BYTES = 16 * 1024 * 1024
+SANDBOX_MAX_FILES = 400
 
 
 def credentials(owner, repository=None, *, write=False):
@@ -445,18 +447,35 @@ class RepositoryWorkspaces:
         return tree, names
 
     def snapshot(self, current, *, for_publish=True):
+        tree, diff, entries = self._snapshot(current, for_publish=for_publish)
+        return tree, diff.decode('utf-8', errors='replace'), entries
+
+    def sandbox_snapshot(self, current):
+        """Build a bounded, byte-exact patch and the blobs to scan before upload."""
+        return self._snapshot(current, for_publish=True, sandbox=True)
+
+    def _snapshot(self, current, *, for_publish, sandbox=False):
         root, base = Path(current['path']), current['base_sha']
         if not SHA.fullmatch(base):
             raise GitHubError('Workspace base is invalid.')
         tree, _ = self.workspace_tree(root)
+        diff_args = ['--binary'] if for_publish else ['--no-renames', '-O/dev/null']
+        if sandbox:
+            diff_args.append('--no-renames')
         diff = git(root, 'diff', '--no-ext-diff', '--no-textconv', '--no-color', '--no-relative',
-                   *(['--binary'] if for_publish else ['--no-renames', '-O/dev/null']), base, tree)
-        if len(diff) > MAX_DIFF:
+                   *diff_args, base, tree)
+        diff_limit = SANDBOX_MAX_BYTES if sandbox else MAX_DIFF
+        if len(diff) > diff_limit:
+            if sandbox:
+                raise GitHubError(f'The Rift patch is too large for Railway Sandbox testing '
+                                  f'({len(diff)} bytes, limit {diff_limit} bytes).')
             raise GitHubError(
                 f'The diff is too large to review here ({len(diff)} bytes; '
                 f'limit {MAX_DIFF} bytes). Use a manual Git workflow.')
         entries = []
         changed = git(root, 'diff', '--raw', '-z', '--no-relative', '--no-renames', '-O/dev/null', base, tree).split(b'\0')
+        if sandbox and len(changed) // 2 > SANDBOX_MAX_FILES:
+            raise GitHubError(f'Railway Sandbox testing supports up to {SANDBOX_MAX_FILES} changed files.')
         total = 0
         for i in range(0, len(changed) - 1, 2):
             meta, raw = changed[i:i+2]
@@ -471,13 +490,17 @@ class RepositoryWorkspaces:
                 if mode not in ('100644', '100755'):
                     raise GitHubError('Symlink and submodule changes need a manual Git workflow.')
                 if for_publish:
-                    content = git(root, 'cat-file', 'blob', tree + ':' + name)
+                    blob = tree + ':' + name
+                    if sandbox and total + int(git(root, 'cat-file', '-s', blob)) > SANDBOX_MAX_BYTES:
+                        raise GitHubError(f'Railway Sandbox testing supports up to {SANDBOX_MAX_BYTES} bytes '
+                                          'of changed file content.')
+                    content = git(root, 'cat-file', 'blob', blob)
                     total += len(content)
                     entry['data'] = content
             entries.append(entry)
-        if len(entries) > MAX_FILES or total > MAX_BYTES:
+        if not sandbox and (len(entries) > MAX_FILES or total > MAX_BYTES):
             raise GitHubError('Publish at most 100 changed files and 5 MB at a time.')
-        return tree, diff.decode('utf-8', errors='replace'), entries
+        return tree, diff, entries
 
     def review(self, owner, bot_id):
         with self.locked(owner, bot_id):

@@ -9,7 +9,7 @@ import tempfile
 import time
 
 import bots
-from developer_repositories import RepositoryWorkspaces, git
+from developer_repositories import RepositoryWorkspaces
 from github_connection import GitHubError
 from task_store import CloudTaskStore, DuplicateTaskId, STATUS_RUNNING
 
@@ -90,7 +90,7 @@ def submit(owner, bot, conversation, task_id, store):
 def _snapshot(workspaces, current):
     from kyrex.providers.privacy import SecretFilter
 
-    tree, _, entries = workspaces.snapshot(current)
+    tree, patch, entries = workspaces.sandbox_snapshot(current)
     sensitive_reason = runpy.run_path(str(_ROOT.parent / 'scripts/check_sensitive_paths.py'))['sensitive_reason']
     privacy = SecretFilter()
     for entry in entries:
@@ -99,10 +99,7 @@ def _snapshot(workspaces, current):
         content = entry['data'].decode('utf-8', errors='replace')
         if sensitive_reason(entry['path']) or privacy.text(content) != content:
             raise SandboxError('The Rift snapshot includes a sensitive change and was not sent to Railway.')
-    base = current['base_sha']
-    patch = git(current['path'], 'diff', '--binary', '--no-ext-diff', '--no-textconv',
-                '--no-color', '--no-relative', '--no-renames', base, tree)
-    return base, tree, patch
+    return current['base_sha'], tree, patch
 
 
 def _remote_check(config, base, tree, patch, cancelled, progress):

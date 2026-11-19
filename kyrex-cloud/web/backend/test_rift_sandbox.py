@@ -4,7 +4,9 @@ import pytest
 
 import bots
 import chat_service
+import developer_repositories
 from developer_repositories import RepositoryWorkspaces, git
+from github_connection import GitHubError
 import rift_sandbox
 import serve
 import task_store
@@ -65,6 +67,27 @@ def test_snapshot_rebuilds_exact_tree_without_editing_local_index(pilot, tmp_pat
     (root / 'notes.txt').write_text('test-project-token\n')
     with pytest.raises(rift_sandbox.SandboxError, match='sensitive change'):
         rift_sandbox._snapshot(workspaces, workspaces.current('alice', bot))
+
+
+def test_large_rift_patch_can_run_without_raising_pr_review_limit(pilot, tmp_path, monkeypatch):
+    _, root, base, bot, workspaces = pilot
+    replica = tmp_path / 'fresh'
+    git(None, 'clone', '-q', '--no-local', str(root), str(replica))
+    (root / 'fixture.txt').write_bytes(b'Ordinary snapshot fixture data.\n' * 125_000)
+    current = workspaces.current('alice', bot)
+
+    snapshot_base, tree, patch = rift_sandbox._snapshot(workspaces, current)
+    assert snapshot_base == base
+    assert len(patch) > 3_962_465
+    git(replica, 'apply', '--index', '--binary', '-', data=patch)
+    assert git(replica, 'write-tree').decode().strip() == tree
+
+    for for_publish in (True, False):
+        with pytest.raises(GitHubError, match='limit 1000000 bytes'):
+            workspaces.snapshot(current, for_publish=for_publish)
+    monkeypatch.setattr(developer_repositories, 'SANDBOX_MAX_BYTES', len(patch) - 1)
+    with pytest.raises(GitHubError, match='too large for Railway Sandbox testing'):
+        rift_sandbox._snapshot(workspaces, current)
 
 
 def test_chat_retry_runs_once_and_reports_result_in_same_thread(pilot, monkeypatch):
