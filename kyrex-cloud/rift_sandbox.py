@@ -26,9 +26,31 @@ _REQUEST = re.compile(
 )
 _WORKFLOW_SECRET_REFERENCE = re.compile(
     r'^([ \t]*[A-Za-z_][A-Za-z0-9_-]*):(?=[ \t]+([\'\"]?)\$\{\{[ \t]*'
-    r'secrets\.[A-Za-z_][A-Za-z0-9_]*[ \t]*\}\}\2[ \t]*\r?$)',
+    r'(?:secrets\.[A-Za-z_][A-Za-z0-9_]*|github\.token)[ \t]*\}\}\2[ \t]*\r?$)',
     re.MULTILINE,
 )
+_JS_ENV_REFERENCE = re.compile(
+    r'^([ \t]*(?:(?:export|const|let|var)[ \t]+)*[A-Za-z_][A-Za-z0-9_]*[ \t]*)='
+    r'(?=[ \t]*process\.env(?:\.[A-Za-z_][A-Za-z0-9_]*|'
+    r'\[([\'\"])[A-Za-z_][A-Za-z0-9_]*\2\])'
+    r'[ \t]*;?[ \t]*\r?$)', re.MULTILINE,
+)
+_SHELL_ENV_REFERENCE = re.compile(
+    r'^([ \t]*(?:export[ \t]+)?[A-Za-z_][A-Za-z0-9_]*[ \t]*)='
+    r'(?=[ \t]*("?)\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})\2'
+    r'[ \t]*;?[ \t]*\r?$)', re.MULTILINE,
+)
+_TYPESCRIPT_FIELD = re.compile(
+    r'^([ \t]*[A-Za-z_][A-Za-z0-9_]*):'
+    r'(?=[ \t]*(?:string|number|boolean|unknown|never|any)[ \t]*;[ \t]*\r?$)',
+    re.MULTILINE,
+)
+_DOTENV_PLACEHOLDER = re.compile(
+    r'^([ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*)='
+    r'(?=[ \t]*([\'\"]?)(?:change-me|replace-me)\2[ \t]*\r?$)',
+    re.IGNORECASE | re.MULTILINE,
+)
+_DISPLAY_PATH = re.compile(r'[A-Za-z0-9._/-]{1,160}')
 _ROOT = Path(__file__).resolve().parent
 _STAGES = {
     'copying': 'Copying and verifying the Rift snapshot…',
@@ -95,10 +117,19 @@ def submit(owner, bot, conversation, task_id, store):
 
 def _source_findings(privacy, path, data):
     source = data.decode('utf-8', errors='replace')
+    # Remove only the delimiter of a whole, recognized reference. The
+    # scanner still sees every value and catches configured credentials.
+    suffix = Path(path).suffix
+    if suffix in {'.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.cts', '.mts'}:
+        source = _JS_ENV_REFERENCE.sub(r'\1 ', source)
+    if suffix in {'.sh', '.bash', '.zsh'}:
+        source = _SHELL_ENV_REFERENCE.sub(r'\1 ', source)
     if path.startswith('.github/workflows/'):
-        # The YAML assignment is a reference, but its expression still goes
-        # through the scanner. The exported blob itself is never modified.
         source = _WORKFLOW_SECRET_REFERENCE.sub(r'\1 ', source)
+    if suffix in {'.ts', '.tsx', '.cts', '.mts'}:
+        source = _TYPESCRIPT_FIELD.sub(r'\1 ', source)
+    if path.rsplit('/', 1)[-1] in {'.env.example', '.env.sample', '.env.template'}:
+        source = _DOTENV_PLACEHOLDER.sub(r'\1 ', source)
     filtered = privacy.text(source)
     if source == filtered:
         return Counter()
@@ -124,6 +155,13 @@ def _in_public_base(current, path, privacy, findings):
     return baseline is not None and findings <= baseline
 
 
+def _blocked_snapshot(privacy, path, reason):
+    location = (f' in {path!r}' if _DISPLAY_PATH.fullmatch(path) and privacy.text(path) == path
+                else ' in a file with a redacted name')
+    return SandboxError(f'The Rift snapshot includes a sensitive change{location} ({reason}). '
+                        'No files were sent to Railway.')
+
+
 def _snapshot(workspaces, current):
     from kyrex.providers.privacy import SecretFilter
 
@@ -135,10 +173,10 @@ def _snapshot(workspaces, current):
             continue
         path = entry['path']
         if sensitive_reason(path):
-            raise SandboxError('The Rift snapshot includes a sensitive change and was not sent to Railway.')
+            raise _blocked_snapshot(privacy, path, 'protected file path')
         findings = _source_findings(privacy, path, entry['data'])
         if findings is None or (findings and not _in_public_base(current, path, privacy, findings)):
-            raise SandboxError('The Rift snapshot includes a sensitive change and was not sent to Railway.')
+            raise _blocked_snapshot(privacy, path, 'possible credential or private identifier')
     return current['base_sha'], tree, patch
 
 

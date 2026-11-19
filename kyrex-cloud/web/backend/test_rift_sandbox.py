@@ -137,6 +137,43 @@ def test_workflow_snapshot_runs_with_public_fixture_and_secret_reference(pilot, 
         rift_sandbox._snapshot(workspaces, current)
 
 
+def test_source_references_pass_but_blocked_changes_identify_only_the_safe_path(pilot, monkeypatch):
+    _, root, _, bot, workspaces = pilot
+    current = workspaces.current('alice', bot)
+    (root / 'runtime.mjs').write_text("export const token = process.env['PROJECT_TOKEN'];\n")
+    (root / 'start.sh').write_text('export TOKEN="${PROJECT_TOKEN}"\n')
+    (root / 'types.ts').write_text('interface Config {\n  token: string;\n}\n')
+    (root / '.env.example').write_text('PROJECT_TOKEN=change-me\n')
+    workflow = root / '.github' / 'workflows' / 'smoke.yml'
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text('env:\n  token: ${{ github.token }}\n')
+    _, _, patch = rift_sandbox._snapshot(workspaces, current)
+    assert b'process.env' in patch and b'github.token' in patch
+
+    (root / 'runtime.mjs').write_text("const token = process.env.PROJECT_TOKEN ?? 'inert-fallback-value';\n")
+    with pytest.raises(rift_sandbox.SandboxError) as error:
+        rift_sandbox._snapshot(workspaces, current)
+    assert "'runtime.mjs'" in str(error.value)
+    assert 'inert-fallback-value' not in str(error.value)
+
+    (root / 'runtime.mjs').unlink()
+    (root / 'test-project-token.txt').write_text('test-project-token\n')
+    with pytest.raises(rift_sandbox.SandboxError) as error:
+        rift_sandbox._snapshot(workspaces, current)
+    assert 'redacted name' in str(error.value)
+    assert 'test-project-token' not in str(error.value)
+
+    (root / 'test-project-token.txt').unlink()
+    (root / 'credentials.json').write_text('{}')
+    with pytest.raises(rift_sandbox.SandboxError, match=r"'credentials.json' \(protected file path\)"):
+        rift_sandbox._snapshot(workspaces, current)
+
+    (root / 'credentials.json').unlink()
+    monkeypatch.setenv('TEST_EXACT_TOKEN', 'change-me')
+    with pytest.raises(rift_sandbox.SandboxError, match=r"'\.env\.example'"):
+        rift_sandbox._snapshot(workspaces, current)
+
+
 def test_chat_retry_runs_once_and_reports_result_in_same_thread(pilot, monkeypatch):
     _, root, base, bot, _ = pilot
     store = task_store.CloudTaskStore()
