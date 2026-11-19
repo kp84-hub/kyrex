@@ -34,7 +34,6 @@ MAX_DIFF = 1_000_000
 MAX_FILES = 100
 MAX_BYTES = 5 * 1024 * 1024
 SANDBOX_MAX_BYTES = 16 * 1024 * 1024
-SANDBOX_MAX_FILES = 400
 
 
 def credentials(owner, repository=None, *, write=False):
@@ -474,8 +473,6 @@ class RepositoryWorkspaces:
                 f'limit {MAX_DIFF} bytes). Use a manual Git workflow.')
         entries = []
         changed = git(root, 'diff', '--raw', '-z', '--no-relative', '--no-renames', '-O/dev/null', base, tree).split(b'\0')
-        if sandbox and len(changed) // 2 > SANDBOX_MAX_FILES:
-            raise GitHubError(f'Railway Sandbox testing supports up to {SANDBOX_MAX_FILES} changed files.')
         total = 0
         for i in range(0, len(changed) - 1, 2):
             meta, raw = changed[i:i+2]
