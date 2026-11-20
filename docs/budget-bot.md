@@ -1,5 +1,36 @@
 # Budget Bot
 
+## Budget worksheet
+
+Open the existing Budget Bot conversation and select **Budget worksheet**.
+Add bills and income as one-time, weekly, every-two-week, or monthly rows.
+The worksheet shows the current balance, cash before the next income, the
+lowest balance over 30 days, and an interactive end-of-day balance chart.
+Edit a row to change upcoming amounts or dates. Use **Paid** or **Received**
+to settle its next due date. **Undo settlement** restores the last settlement.
+
+You can also enter worksheet commands in that conversation:
+
+- “Internet is $80 on the 25th every month and Payday is $2,200 this Friday.”
+- “Starting balance is $700 today.”
+- “Change Internet to $90.”
+- “Mark Internet paid.”
+- “How much do I have until payday?”
+
+The manual balance represents cash at the beginning of its selected date.
+Only recorded worksheet settlements affect that baseline. When a manual
+balance is absent, the worksheet can use the saved Plaid cash estimate for
+the same currency, provided a bank sync has completed. Mark bank-mode rows
+settled after they are reflected in posted bank totals. The forecast then
+omits those rows and applies only the remaining schedule to the cash estimate.
+Overdue bills count today. Overdue income is excluded until received or
+rescheduled. Same-day bills are applied before income.
+
+Kyrex uses the existing encryption for saved worksheet data. Worksheet
+commands run without model inference. The worksheet receives the cash estimate
+from the existing aggregate bank view and never imports individual Plaid
+transactions or attempts to match them to named bills.
+
 ## Private bank totals with Plaid
 
 Settings → Budget Bot → **Private bank budget** connects one bank login per

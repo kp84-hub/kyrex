@@ -1958,6 +1958,12 @@ def _existing_or_new_bot_conversation(user, bot_id):
         if account and account['kind']=='managed':
             raise BotUnavailable('Managed learning accounts cannot attach Bots.')
     bot = resolve_bot_for_user(user,bot_id)
+    # Budget settings already bind this saved conversation to the owner's Bot.
+    # Keep Chat's ordinary Bot picker on the same thread as the worksheet.
+    from budget_watch import cid as budget_conversation_id
+    budget = get_conversation(user, budget_conversation_id(user))
+    if budget and budget.get('bot_id') == bot_id and not budget.get('workspace_id'):
+        return budget
     key = hashlib.sha256(str(bot_id).encode()).hexdigest()
     primary = _user_dir(user) / f'bot-conversation-{key}.primary'
     try:
@@ -2508,6 +2514,8 @@ def _conversation_activity(user: str, conversation_id: str) -> Optional[dict]:
 
 
 def list_conversations(user: str) -> list[dict]:
+    from budget_watch import cid as budget_conversation_id
+    budget_id = budget_conversation_id(user)
     d = _user_dir(user)
     out = []
     for p in sorted(d.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
@@ -2561,7 +2569,7 @@ def list_conversations(user: str) -> list[dict]:
             "latest_update": latest_update,
             "workspace_id": data.get("workspace_id"),
             "bot_id": data.get("bot_id"),
-            "automation": data.get("automation"),
+            "automation": "budget-worksheet" if p.stem == budget_id else data.get("automation"),
             # Durable active work (a pending/running Bot task or delegation),
             # or None. The sidebar renders it as a secondary line and updates
             # it live from the same task's Flux stream — no polling.
