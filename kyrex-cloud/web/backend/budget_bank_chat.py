@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 import bot_provider
 import budget_bank
+import budget_worksheet
 
 
 _REFRESH = re.compile(r'(?:update|refresh|sync) (?:my |the )?(?:bank )?budget', re.I)
@@ -104,6 +105,16 @@ def install(chat):
         # Managed/new-account chat may not have created a conversation yet.
         conv = chat.get_conversation(user, conversation_id) if conversation_id else None
         row = budget_bank.BankStore(chat._task_store()).get(user) if conv and conv.get('bot_id') else None
+        if (conv and conversation_id == budget_bank.cid(user) and not image_ids
+                and workspace_id in (None, '', chat._WORKSPACE_UNSET)):
+            reply = worksheet_reply(chat, user, conv, user_content, request_id, cancel_event)
+            if reply is not None:
+                if cancel_event is not None and cancel_event.is_set() and not reply:
+                    yield {'type': 'status', 'status': 'cancelled', 'content': ''}
+                    return
+                yield {'type': 'conversation', 'conversation_id': conversation_id}
+                yield {'type': 'status', 'status': 'complete', 'content': reply}
+                return
         if row and row['private'].get('private_mode') and row['bot_id'] == conv['bot_id']:
             chat.resolve_bot_for_user(user, conv['bot_id'])
             if image_ids or workspace_id not in (None, '', chat._WORKSPACE_UNSET):
@@ -121,6 +132,42 @@ def install(chat):
 
     private_stream._private_budget_boundary = private_stream
     chat.stream_chat = private_stream
+
+
+def worksheet_reply(chat, owner, conv, text, request_id, cancel_event):
+    store = budget_worksheet.WorksheetStore(chat._task_store())
+    try:
+        today, _, _, _ = store.context(owner, conv)
+    except LookupError:
+        return None
+    try:
+        intent, actions = budget_worksheet.command(text, today)
+        if intent is None:
+            return None
+        if cancel_event is not None and cancel_event.is_set():
+            return ''
+        budget_bank.eligible(owner, conv['bot_id'])
+        if intent == 'write':
+            content = store.mutate(owner, conv, actions, request_id=request_id)
+        elif intent == 'show':
+            value = store.view(owner, conv)
+            content = 'Open **Budget worksheet** above the chat to see your bills and 30-day forecast.'
+            if value['before_income_minor'] is not None:
+                balance = money(value['before_income_minor'], value['currency'])
+                content = f'Your projected balance before your next income on {value["next_income"]} is **{balance}**.\n\n' + content
+            elif value['current_minor'] is None:
+                content = 'Set a starting balance to see your cash forecast.\n\n' + content
+            elif value['next_income'] is None:
+                content = 'Add your next payday to see the balance before it.\n\n' + content
+        else:
+            content = budget_worksheet.COMMAND_GUIDE
+    except ValueError as exc:
+        content = str(exc)
+    for role, message in [('user', text), ('assistant', content)]:
+        chat._append_message(owner, conv, role, message,
+            identity=f'turn-{request_id}-{role}' if request_id else None)
+    chat._write(owner, conv)
+    return content
 
 
 async def stream(chat, owner, conv, text, request_id, cancel_event):

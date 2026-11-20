@@ -3,6 +3,7 @@ import { useChat } from './hooks/useChat.js';
 import { useAppInstall } from './hooks/useAppInstall.js';
 import Sidebar from './components/Sidebar.jsx';
 import ChatHeader from './components/ChatHeader.jsx';
+import BudgetWorksheet from './components/BudgetWorksheet.jsx';
 import KbotHeader from './components/KbotHeader.jsx';
 import { isKbotSurface, kbotPhase } from './lib/kbotSurface.js';
 import './Kbot.css';
@@ -74,6 +75,9 @@ export default function App() {
   const [connectionsOpen, setConnectionsOpen] = useState(false);
   const [workspaceContext, setWorkspaceContext] = useState(null);
   const [workspaceReview, setWorkspaceReview] = useState(null);
+  const [worksheetConversation, setWorksheetConversation] = useState(null);
+  const budgetConversation = conversations.find(c => c.conversation_id === activeId)?.automation === 'budget-worksheet';
+  const worksheetOpen = budgetConversation && worksheetConversation === activeId;
   const [setup, setSetup] = useState(null), [setupError, setSetupError] = useState('');
   const [setupLoading, setSetupLoading] = useState(true);
   const refreshSetup = useCallback(async () => {
@@ -424,6 +428,10 @@ export default function App() {
                 onAdvanced={() => setSettingsOpen(true)} />
         ) : (
         <div className="chat-area">
+          {budgetConversation && <button type="button" className="connection-btn worksheet-toggle"
+            aria-expanded={worksheetOpen} onClick={() => setWorksheetConversation(worksheetOpen ? null : activeId)}>
+            {worksheetOpen ? 'Back to Budget Bot chat' : 'Budget worksheet'}
+          </button>}
           {conversations.find(c => c.conversation_id === activeId)?.automation === 'level6-weekly-preview' && (
             <Level6PreviewActions key={activeId} conversationId={activeId} messages={visibleMessages}
               onQueued={async id => { await refreshMessages(id); await refreshList({ silent: true }); }} />
@@ -436,7 +444,7 @@ export default function App() {
             onCancelTask={cancelDelegatedTask}
             onOpenConversation={selectConversation}
           />
-          <MessageList compact={kbotMode}
+          {worksheetOpen ? <BudgetWorksheet key={activeId} refreshing={isGenerating} /> : <MessageList compact={kbotMode}
             messages={visibleMessages}
             conversationId={activeId}
             isGenerating={isGenerating}
@@ -450,7 +458,7 @@ export default function App() {
             delegations={liveDelegations.filter(d => !hasDeveloperTarget(d))}
             onOpenConversation={selectConversation}
             onReviewDeveloperChanges={reviewBot ? openWorkspaceReview : undefined}
-          />
+          />}
           <Composer compact={kbotMode} conversationId={activeId} onSend={send} onStop={stop} isGenerating={isGenerating} isConversationReady={isConversationReady} providers={providers} activeProvider={activeProvider} activeModel={activeModel} activeBotId={activeBotId} onChangeProvider={changeProvider} workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} onAttachWorkspace={attachWorkspace} voiceAnchorRef={setVoiceAnchor} />
           {reviewBot && workspaceReview?.botId === reviewBot.id && workspaceReview.conversationId === activeId &&
             <DeveloperChanges botId={reviewBot.id} report={workspaceReview.report}

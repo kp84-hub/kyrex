@@ -947,6 +947,8 @@ import budget_api
 app.include_router(budget_api.router)
 import budget_bank_api
 app.include_router(budget_bank_api.router)
+import budget_worksheet_api
+app.include_router(budget_worksheet_api.router)
 import crypto_paper_api
 app.include_router(crypto_paper_api.router)
 import gmail_cleanup_api

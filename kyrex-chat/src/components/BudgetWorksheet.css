@@ -1,0 +1,80 @@
+.worksheet-toggle {
+  align-self: flex-start;
+  margin: 8px clamp(12px, 3vw, 28px);
+}
+.budget-worksheet {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px clamp(12px, 3vw, 28px) 24px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.budget-worksheet h2, .budget-worksheet h3 { margin: 0; font-weight: 650; }
+.budget-worksheet h2 { font-size: 1.3rem; }
+.budget-worksheet h3 { font-size: 1rem; }
+.worksheet-top, .worksheet-chart-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.worksheet-hint, .worksheet-chart-dates, .worksheet-metric small, .worksheet-table small {
+  color: var(--text-dim);
+  font-size: .8rem;
+}
+.worksheet-hint { margin: 4px 0; }
+.worksheet-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.worksheet-metric, .worksheet-chart, .worksheet-form {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  padding: 12px;
+}
+.worksheet-metric { display: grid; align-content: start; gap: 4px; }
+.worksheet-metric span, .worksheet-chart-heading span { font-size: .8rem; }
+.worksheet-metric strong { font-size: clamp(.9rem, 3vw, 1.5rem); overflow-wrap: anywhere; }
+.worksheet-chart { margin: 12px 0 18px; }
+.worksheet-chart svg { width: 100%; max-height: 180px; display: block; }
+.worksheet-chart input { width: 100%; margin: 0; accent-color: var(--accent); }
+.worksheet-chart-dates { display: flex; justify-content: space-between; }
+.worksheet-grid-line { stroke: var(--border); }
+.worksheet-zero-line { stroke: currentColor; stroke-dasharray: 4 4; opacity: .45; }
+.worksheet-chart-fill { fill: var(--accent); opacity: .11; }
+.worksheet-chart-line { stroke: var(--accent); stroke-width: 2.5; fill: none; vector-effect: non-scaling-stroke; }
+.worksheet-chart-dot { fill: var(--accent); }
+.worksheet-negative { color: var(--error); }
+.worksheet-income { color: var(--ok); }
+.worksheet-table-wrap { overflow: auto; margin-bottom: 8px; }
+.worksheet-table { width: 100%; border-collapse: collapse; white-space: nowrap; text-align: left; font-size: .9rem; }
+.worksheet-table th, .worksheet-table td { padding: 8px; border-bottom: 1px solid var(--border); }
+.worksheet-table small { display: block; margin-top: 2px; }
+.worksheet-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(125px, 1fr));
+  align-items: end;
+  gap: 10px;
+  margin: 10px 0;
+}
+.worksheet-form label { display: grid; gap: 4px; font-size: .8rem; }
+.worksheet-form input, .worksheet-form select, .worksheet-table button {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: inherit;
+  border-radius: 6px;
+  min-width: 0;
+  padding: 6px;
+}
+.worksheet-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.worksheet-table button:not(:disabled) { cursor: pointer; }
+@media (max-width: 460px) {
+  .worksheet-metric { padding: 8px; }
+  .worksheet-table { font-size: .8rem; }
+}
