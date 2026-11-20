@@ -14,14 +14,22 @@ import connectors
 
 HORIZON = 30
 FREQUENCIES = {'once', 'weekly', 'biweekly', 'monthly'}
-AMOUNT = r'[+-]?\$?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?'
-COMMAND_GUIDE = ('Open Budget worksheet above the chat. To add a row here, try '
-          '“Internet is $80 on the 25th every month” or “Payday is $2,200 this Friday.”')
+_NUMBER = r'(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?'
+AMOUNT = rf'[+-]?(?:\$ *{_NUMBER}|{_NUMBER}(?: *\$)?)'
+COMMAND_GUIDE = ('Include the item, amount, and due date. Try '
+                 '“Add car insurance $125 on Nov. 24” or '
+                 '“Internet is $80 on the 25th every month.”')
 _DAY_NAMES = tuple(calendar.day_name)
 _DATE_TEXT = r'\d{4}-\d{2}-\d{2}|today|tomorrow|(?:(?:this|next) )?(?:' + '|'.join(_DAY_NAMES) + ')'
+_MONTHS = {name.lower(): i for i, name in enumerate(calendar.month_name) if name}
+_MONTHS.update({name.lower(): i for i, name in enumerate(calendar.month_abbr) if name})
+_MONTHS['sept'] = 9
+_MONTH_DATE = re.compile(
+    rf'(?P<month>{"|".join(_MONTHS)})\.? (?P<day>\d{{1,2}})(?:st|nd|rd|th)?'
+    r'(?:,? (?P<year>\d{4}))?', re.I)
 _ENTRY = re.compile(
     rf'(?:add (?P<added>[^$]{{1,80}}?)|(?P<named>[^$]{{1,80}}?) (?:is|will be)) '
-    rf'(?P<amount>{AMOUNT}) (?:on )?(?P<date>{_DATE_TEXT}|the \d{{1,2}}(?:st|nd|rd|th))'
+    rf'(?P<amount>{AMOUNT}) (?:on )?(?P<date>{_DATE_TEXT}|{_MONTH_DATE.pattern}|the \d{{1,2}}(?:st|nd|rd|th))'
     r'(?: every (?P<repeat>week|two weeks|month))?', re.I)
 _BALANCE = re.compile(rf'(?:set )?(?:my )?starting balance (?:is |to )?({AMOUNT})(?: (?:on )?({_DATE_TEXT}))?', re.I)
 _SETTLE = re.compile(r'mark (.{1,80}) (?:paid|received|settled)', re.I)
@@ -38,7 +46,7 @@ def _day(value):
 def _amount(value):
     if not isinstance(value, str) or len(value) > 24 or not re.fullmatch(AMOUNT, value):
         raise ValueError('Enter an amount with up to two decimal places.')
-    amount = int(Decimal(value.replace('$', '').replace(',', '')) * 100)
+    amount = int(Decimal(value.replace('$', '').replace(',', '').replace(' ', '')) * 100)
     if abs(amount) > 10**9:
         raise ValueError('Enter a smaller amount.')
     return amount
@@ -303,6 +311,22 @@ def _spoken_date(value, today, repeat='once'):
         return today
     if value == 'tomorrow':
         return today + timedelta(days=1)
+    if match := _MONTH_DATE.fullmatch(value):
+        month, day = _MONTHS[match['month']], int(match['day'])
+        explicit_year = match['year']
+        if explicit_year:
+            years = (int(explicit_year),)
+        else:
+            # Eight years covers the gap between leap years across a century.
+            years = range(today.year, min(today.year + 8, 9999) + 1)
+        for year in years:
+            try:
+                due = date(year, month, day)
+            except ValueError:
+                continue
+            if explicit_year or due >= today:
+                return due
+        raise ValueError('Choose a valid due date.')
     if value.startswith('the ') and repeat == 'monthly':
         day = int(re.match(r'the (\d+)', value)[1])
         if not 1 <= day <= 31:
@@ -352,5 +376,7 @@ def command(text, today):
             rows.append(row)
         return 'write', rows
     if any(matches) or re.match(r'(?:add|edit|update) (?:.*\bworksheet\b)', statement, re.I):
+        return 'guide', []
+    if re.match(r'add (?:.*\d *\$|.*\$ *\d|(?:bill|expense|income)\b)', statement, re.I):
         return 'guide', []
     return None, []
