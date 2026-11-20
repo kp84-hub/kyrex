@@ -1,10 +1,11 @@
 import { CommandCapture, openMicrophone, wavBlob } from './voiceAudio.js';
 import { locationForMessage } from './location.js';
+import { progressText } from './progress.js';
 import { spokenText, speechChunks } from './voiceText.js';
 import { VoiceScreenLock } from './voiceScreenLock.js';
 export { spokenText, speechChunks } from './voiceText.js';
 
-export async function voiceReply(response, onApproval = () => {}) {
+export async function voiceReply(response, onApproval = () => {}, onProgress = () => {}) {
   const reader = response.body.getReader(), decoder = new TextDecoder();
   let buffer = '', reply = null;
   try {
@@ -25,6 +26,9 @@ export async function voiceReply(response, onApproval = () => {}) {
         if (event.type === 'error') throw new Error('The request may be saved in voice chat. Open it before repeating the command.');
         if (event.type === 'cancelled') throw new Error('The voice request was interrupted. Check its status in voice chat.');
         if (event.type === 'approval_request') reply = 'This needs your approval. Open your voice chat in Kyrex to review it.';
+        if (event.type === 'progress' && typeof event.payload?.stage === 'string' && event.payload.stage.trim()) {
+          onProgress(progressText(event.payload));
+        }
       }
       if (buffer.length > 65536) throw new Error('Voice received an unreadable response. Check Chat.');
       if (done) break;
@@ -272,10 +276,14 @@ export class VoiceClient {
       this.chatResponse = this.request('chat', { signal: controller.signal,
         body: JSON.stringify({ message: text, request_id: requestId,
           ...(deviceLocation ? { device_location: deviceLocation } : {}) }), headers: { 'Content-Type': 'application/json' } });
-      this.state('working', { transcript: text });
+      this.state('working', { transcript: text, progress: '' });
       this.armWake();
       let reply, approval = false;
-      try { reply = await voiceReply(await this.chatResponse, () => { approval = true; }); }
+      try {
+        reply = await voiceReply(await this.chatResponse, () => { approval = true; }, progress => {
+          if (active() && this.phase === 'working') this.state('working', { progress });
+        });
+      }
       finally { if (this.turnRequestId === requestId) this.chatRunning = false; }
       this.onResult(this.cid);
       if (!active()) return;

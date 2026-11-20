@@ -9,8 +9,8 @@ const until = async condition => {
   assert.ok(condition(), 'Voice did not reach the expected state');
 };
 
-function fixture({ reply = longReply, failAt = 0, holdAudio = false, holdNextAudio = false, holdDecode = false, holdPlayback = false, oversizedAudio = false, followUpSeconds = 0 } = {}) {
-  const calls = [], parts = [], played = [], phases = [], errors = [];
+function fixture({ reply = longReply, failAt = 0, holdAudio = false, holdNextAudio = false, holdDecode = false, holdPlayback = false, oversizedAudio = false, followUpSeconds = 0, chatStream } = {}) {
+  const calls = [], parts = [], played = [], phases = [], errors = [], progress = [];
   let audioResolve, audioReject, decodeResolve, player;
   const json = value => ({ ok: true, json: async () => value });
   const context = {
@@ -28,7 +28,7 @@ function fixture({ reply = longReply, failAt = 0, holdAudio = false, holdNextAud
     },
   };
   const client = new VoiceClient({ clientId: 'a'.repeat(32),
-    onState: state => { phases.push(state.phase); if (state.error) errors.push(state.error); },
+    onState: state => { phases.push(state.phase); if (state.error) errors.push(state.error); if (state.progress) progress.push(state.progress); },
     microphone: async () => ({ tone() {}, stop() {}, context }),
     fetcher: async (url, options) => {
       calls.push(url);
@@ -36,7 +36,7 @@ function fixture({ reply = longReply, failAt = 0, holdAudio = false, holdNextAud
         settings: { configured: true, engine: 'openai', follow_up_seconds: followUpSeconds } });
       if (url.endsWith('/listen')) return json({ lease: 'test-only-speech-lease' });
       if (url.endsWith('/transcribe')) return json({ text: 'Explain the result' });
-      if (url.endsWith('/chat')) return { ok: true, body: new ReadableStream({ start(controller) {
+      if (url.endsWith('/chat')) return { ok: true, body: chatStream || new ReadableStream({ start(controller) {
         controller.enqueue(new TextEncoder().encode('data: ' + JSON.stringify({ type: 'done', content: reply }) + '\n\n'));
         controller.close();
       } }) };
@@ -60,7 +60,7 @@ function fixture({ reply = longReply, failAt = 0, holdAudio = false, holdNextAud
     client.samples(new Float32Array(3200).fill(.1));
     return client.finishCapture();
   }
-  return { client, calls, parts, played, phases, errors, run,
+  return { client, calls, parts, played, phases, errors, progress, run,
     releaseAudio: () => audioResolve(), releaseDecode: () => decodeResolve(),
     rejectAudio: () => audioReject(new Error('The stopped lookahead was aborted')),
     finishPlayback: () => player.onended(),
@@ -84,6 +84,28 @@ test('short replies still need one speech request', async () => {
   const f = fixture({ reply: 'Tomorrow is clear.' }); await f.run();
   assert.deepEqual(f.parts, ['Tomorrow is clear.']);
   assert.equal(f.played.length, 1); assert.deepEqual(f.errors, []);
+});
+
+test('in-flight model and tool progress is visible while speech waits for the result', async () => {
+  let send;
+  const chatStream = new ReadableStream({ start(controller) {
+    send = event => controller.enqueue(new TextEncoder().encode('data: ' + JSON.stringify(event) + '\n\n'));
+  } });
+  const f = fixture({ chatStream });
+  const run = f.run();
+  try {
+    await until(() => f.client.phase === 'working');
+    send({ type: 'progress', payload: { stage: 'The bot is thinking…' } });
+    send({ type: 'progress', payload: { stage: 'The bot is using a tool…' } });
+    send({ type: 'delta', content: 'Provisional answer.' });
+    await until(() => f.progress.length === 2);
+    assert.deepEqual(f.progress, ['The bot is thinking…', 'The bot is using a tool…']);
+    assert.equal(f.client.phase, 'working');
+    assert.deepEqual(f.parts, []);
+    send({ type: 'done', content: 'Final answer.' });
+    await run;
+    assert.deepEqual(f.parts, ['Final answer.']);
+  } finally { await f.client.stop(); }
 });
 
 test('voice reads the final result without waiting for the connection to close', async () => {

@@ -30,6 +30,9 @@ export function wavBlob(chunks) {
   return new Blob([buffer], { type: 'audio/wav' });
 }
 
+// Leave room for a short mid-sentence pause before submitting a command.
+const END_OF_SPEECH_SAMPLES = 16000 * 0.9;
+
 export class CommandCapture {
   constructor(waitSeconds = 8) { this.waitSamples = waitSeconds * 16000; this.chunks = []; this.samples = 0; this.voiced = 0; this.silence = 0; }
   push(samples) {
@@ -38,7 +41,7 @@ export class CommandCapture {
     if (rms >= 0.008) { this.voiced += samples.length; this.silence = 0; }
     else this.silence += samples.length;
     if (this.samples >= 480000) return 'done';
-    if (this.voiced >= 2400 && this.silence >= 19200) return 'done';
+    if (this.voiced >= 2400 && this.silence >= END_OF_SPEECH_SAMPLES) return 'done';
     if (this.voiced < 2400 && this.samples >= this.waitSamples) return 'empty';
     return null;
   }
