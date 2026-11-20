@@ -3917,10 +3917,9 @@ def _delegation_view(store, rec):
 def _safe_result_summary(store, task_id: str) -> tuple[str, str]:
     """Return ``(final_status, sanitized_summary)`` for a target task.
 
-    The summary reuses ``serve.format_result`` (the executor-path formatter the
-    writable-Bot Chat path already uses) and is bounded. No provider key,
-    header, token, Rift path, prompt, or approval secret is included because
-    none of those are ever present on a task's result payload.
+    Browser read failures use fixed diagnostic messages because raw task
+    errors can contain private values. Other summaries reuse the bounded
+    executor result formatter.
     """
     task = store.get(task_id) or {}
     status = str(task.get("status") or "")
@@ -3932,10 +3931,16 @@ def _safe_result_summary(store, task_id: str) -> tuple[str, str]:
             result = {}
     if not isinstance(result, dict):
         result = {}
+    is_browser_read = overwatcher_workflow.is_browser_read_task(task)
+    if is_browser_read and status == "failed":
+        import browser_diagnostics
+        reason = browser_diagnostics.failure_reason(task.get("error"), result)
+        return status, browser_diagnostics.explain(reason)
+
     summary = ""
     if result:
         try:
-            if (overwatcher_workflow.is_browser_read_task(task)
+            if (is_browser_read
                     and result.get("status") == "no_changes"
                     and result.get("mode") != "browser_read"):
                 # Older agents lack the read projection. Preserve source text's

@@ -4,6 +4,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+import browser_diagnostics
 import chat_service as production
 import research_completion as completion
 import serve
@@ -62,6 +63,30 @@ def finish(j):
     j.tasks.complete(j.tid, {'status': 'no_changes', 'mode': 'browser_read',
         'final_response': 'Local festival, October 3, 10 AM–4 PM',
         'browser_sources': ['https://example.com/events'], 'api_key': 'PRIVATE'})
+
+
+@pytest.mark.parametrize(('from_host', 'reason', 'code'), [
+    (False, 'Browser task blocked: host is outside the allowlist', 'bot_site_permissions'),
+    (True, 'blocked on host: host is outside the allowlist', 'host_site_permissions'),
+    (False, 'Browser host connection lost', 'connection_lost'),
+    (True, 'private or local network destinations are blocked', 'private_destination'),
+    (True, 'Unexpected browser error', 'failed'),
+])
+def test_research_failure_includes_only_fixed_diagnostics(journey, from_host, reason, code):
+    j = journey
+    reason += ' private-account-value'
+    if from_host:
+        j.tasks.complete(j.tid, {'status': 'error', 'errors': [reason]})
+    else:
+        j.tasks.fail(j.tid, reason)
+
+    row = {'owner': 'alice', 'bot': 'chief', 'conversation': 'c1',
+           'delegations': json.dumps([j.did])}
+    message = browser_diagnostics.FAILURES[code][1]
+    assert completion.completed_evidence(j.chat, row) == [
+        {'status': 'failed', 'evidence': message, 'excerpt_truncated': False}]
+    assert production._reconcile_delegation(j.tasks, j.tasks.get_delegation(j.did))[
+        'result_summary'] == message
 
 
 def test_pending_then_restart_publishes_once(journey):

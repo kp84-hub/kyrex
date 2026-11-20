@@ -792,8 +792,9 @@ export default function BotSettings({ bots = [], onClose, onChanged, reviewBotId
     try {
       const updated = await updateBotAllowlist(
         bot.id, parseDomainAllowlist(allowlistDraft));
-      const shown = (updated.browser_allowlist || []).join(', ') || 'none';
-      setNotice(`${updated.name || updated.id} browser allowlist: ${shown}.`);
+      const sites = updated.browser_allowlist || [];
+      const shown = sites.includes('*') ? 'all public sites' : sites.join(', ') || 'no sites';
+      setNotice(`Saved ${shown} for ${updated.name || updated.id}.`);
       setAllowlistEditingId(null);
       onChanged?.();
     } catch (e) {
@@ -1709,10 +1710,10 @@ export default function BotSettings({ bots = [], onClose, onChanged, reviewBotId
                       type="button"
                       className="bot-configure-btn"
                       disabled={allowlistBusyId === bot.id}
-                      title="Edit the bare-hostname allowlist the Browser Operator enforces on every navigation."
+                      title="Choose which websites this Bot can read."
                       onClick={() => openAllowlist(bot)}
                     >
-                      {editingAllowlist ? 'Close allowlist' : 'Browser allowlist'}
+                      {editingAllowlist ? 'Close browser sites' : 'Browser sites'}
                     </button>
                   )}
                   {(roleOf(bot) === 'browser' || bot.browser_bot || isCalendarBot(bot)) && (
@@ -1830,7 +1831,7 @@ export default function BotSettings({ bots = [], onClose, onChanged, reviewBotId
               {editingAllowlist && (
                 <div className="bot-llm-config">
                   <div className="bot-config-field">
-                    <label htmlFor={`allow-${bot.id}`}>Browser domain allowlist</label>
+                    <label htmlFor={`allow-${bot.id}`}>Allowed sites</label>
                     <input
                       id={`allow-${bot.id}`}
                       type="text"
@@ -1838,10 +1839,16 @@ export default function BotSettings({ bots = [], onClose, onChanged, reviewBotId
                       value={allowlistDraft}
                       onChange={(e) => setAllowlistDraft(e.target.value)}
                     />
+                    <button
+                      type="button"
+                      className="bot-configure-btn"
+                      disabled={allowlistBusyId === bot.id || allowlistDraft.trim() === '*'}
+                      onClick={() => setAllowlistDraft('*')}
+                    >
+                      Use all public sites
+                    </button>
                     <span className="bot-config-hint">
-                      Enter bare hostnames, or use * to allow any public
-                      website. Empty denies navigation. Currently:{' '}
-                      {(bot.browser_allowlist || []).join(', ') || 'none'}.
+                      Leave blank to block navigation. The Browser Host’s site permissions also apply.
                     </span>
                   </div>
                   <button
@@ -1850,7 +1857,7 @@ export default function BotSettings({ bots = [], onClose, onChanged, reviewBotId
                     disabled={allowlistBusyId === bot.id}
                     onClick={() => saveAllowlist(bot)}
                   >
-                    {allowlistBusyId === bot.id ? 'Saving…' : 'Save allowlist'}
+                    {allowlistBusyId === bot.id ? 'Saving…' : 'Save browser sites'}
                   </button>
                 </div>
               )}
