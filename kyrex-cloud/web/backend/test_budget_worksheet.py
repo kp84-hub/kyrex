@@ -65,6 +65,9 @@ def test_monthly_anchor_remains_the_same_across_short_months():
     ('Add Utilities 42.50 $ on December 1st, 2026', '2026-12-01', 4250),
     ('Add Club dues $35 on Nov. 1st', '2027-11-01', 3500),
     ('Add Club dues $35 on November 1, 2026', '2026-11-01', 3500),
+    ('“Add Club 6 $35 on 2026-11-29.', '2026-11-29', 3500),
+    ('“Add Club 6 $35 on 2026-11-29.”', '2026-11-29', 3500),
+    ('"Add Club 6 $35 on 2026-11-29".', '2026-11-29', 3500),
 ])
 def test_named_budget_dates_and_currency_symbol_placement(text, due, amount_minor):
     today = date(2026, 11, 20)
@@ -74,7 +77,7 @@ def test_named_budget_dates_and_currency_symbol_placement(text, due, amount_mino
     worksheet._change(plan, today, actions[0])
     row = next(iter(plan['rows'].values()))
     assert (row['date'], row['amount_minor'], row['kind']) == (due, amount_minor, 'expense')
-    if text.startswith('Add Club 6'):
+    if 'Club 6' in text:
         assert row['title'] == 'Club 6'
 
 
@@ -82,6 +85,7 @@ def test_bad_explicit_budget_add_stays_in_the_worksheet_handler():
     today = date(2026, 11, 20)
     assert worksheet.command('Add Club dues 35$ on a someday', today) == ('guide', [])
     assert worksheet.command('Add a workout to my calendar', today) == (None, [])
+    assert worksheet.command('“Add Club dues $35 on November 29”?', today) == (None, [])
     with pytest.raises(ValueError, match='Choose a valid due date'):
         worksheet.command('Add Club dues $35 on November 31st', today)
 
@@ -196,7 +200,7 @@ def test_existing_private_budget_chat_shares_the_worksheet_without_a_canonical_t
 
     reply = asyncio.run(send('Show my budget worksheet', 'show'))[-1]
     assert reply['status'] == 'complete' and '30-day forecast' in reply['content']
-    added = asyncio.run(send('Add Workshop 18.50$ on Nov. 29th, 2026', 'add'))[-1]
+    added = asyncio.run(send('“Add Workshop 18.50$ on Nov. 29th, 2026.', 'add'))[-1]
     assert added['status'] == 'complete' and 'Saved the row' in added['content']
     saved_row = b.f.client.get(PATH).json()['rows'][0]
     assert (saved_row['title'], saved_row['amount_minor'], saved_row['date'], saved_row['kind']) == (
@@ -230,7 +234,7 @@ def test_open_budget_from_developer_chat_uses_the_bound_bot_and_keeps_summary_pr
 
     async def send():
         return [frame async for frame in chat.stream_chat(owner, source['conversation_id'],
-            'Open the budget', request_id='budget')]
+            '“Open the budget.”', request_id='budget')]
 
     reply = asyncio.run(send())[-1]
     assert reply['status'] == 'complete'
