@@ -296,6 +296,7 @@ export function useChat() {
       setActiveProvider(conv.provider || (!conv.bot_id ? fallback?.id : null));
       setActiveModel(conv.model || (!conv.bot_id ? fallback?.models?.[0] : null));
       pendingWorkspaceRef.current = null;
+      return conv;
     } catch (e) {
       if (activeIdRef.current === id && revision === transcriptRevisionRef.current
           && request === transcriptRequestRef.current) setError(e.message);
@@ -794,6 +795,7 @@ export function useChat() {
             ...(terminal.email_draft ? { email_draft: terminal.email_draft } : {}),
             ...(terminal.gmail_cleanup ? { gmail_cleanup: terminal.gmail_cleanup } : {}),
             ...(terminal.maps_route ? { maps_route: terminal.maps_route } : {}),
+            ...(terminal.budget_worksheet ? { budget_worksheet: terminal.budget_worksheet } : {}),
             ...(terminal.message_draft ? { message_draft: terminal.message_draft, persisted_id: terminal.persisted_id } : {}),
             streaming: false,
             error: null,

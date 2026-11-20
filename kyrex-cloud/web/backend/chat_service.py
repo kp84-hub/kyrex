@@ -2562,8 +2562,11 @@ def list_conversations(user: str) -> list[dict]:
             latest = assistant or next((m for m in reversed(candidates)
                                         if str(m.get("content") or "").strip()), None)
             if latest:
-                latest_update = " ".join(
-                    str(latest.get("content") or "").split())[:160]
+                budget_link = latest.get("budget_worksheet")
+                if isinstance(budget_link, dict) and budget_link.get("conversation_id") == p.stem:
+                    latest_update = "Budget summary ready."
+                else:
+                    latest_update = " ".join(str(latest.get("content") or "").split())[:160]
         out.append({
             "conversation_id": data.get("conversation_id", p.stem),
             "title": data.get("title", "New chat"),

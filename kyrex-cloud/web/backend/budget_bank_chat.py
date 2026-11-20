@@ -19,6 +19,10 @@ import budget_worksheet
 
 _REFRESH = re.compile(r'(?:update|refresh|sync) (?:my |the )?(?:bank )?budget', re.I)
 _SUMMARY = re.compile(r'(?:show (?:me )?(?:my |the )?budget|budget summary)', re.I)
+_OPEN = re.compile(
+    r'(?:please )?(?:(?:can|could|would) you )?'
+    r'(?:open|show|pull up|view|display) (?:me )?(?:my |the )?'
+    r'(?:current )?budget(?: worksheet)?(?: please)?', re.I)
 
 
 def money(minor, currency):
@@ -84,6 +88,10 @@ def summary(snapshot):
                 for row in snapshot['categories'] if row['category'] not in {'income', 'transfer', 'debt_payment'}]
     if spending:
         lines.append(' · '.join(spending))
+    movements = [f"{row['category'].replace('_', ' ').title()} {row['amount']}"
+                 for row in snapshot['categories'] if row['category'] in {'transfer', 'debt_payment'}]
+    if movements:
+        lines.append('**Transfers and debt payments** ' + ' · '.join(movements))
     if snapshot['cash_estimate']:
         lines.append(f"**Estimated cash in selected checking and savings** {snapshot['cash_estimate']['estimated']}")
     if snapshot['pending_count']:
@@ -104,6 +112,11 @@ def install(chat):
             image_ids=None, device_location=None, voice_reply=False):
         # Managed/new-account chat may not have created a conversation yet.
         conv = chat.get_conversation(user, conversation_id) if conversation_id else None
+        if not image_ids and not fitness_read_only and _OPEN.fullmatch(
+                ' '.join(user_content.strip().rstrip('?.!').split())):
+            for frame in open_budget(chat, user, conv, user_content, request_id, cancel_event):
+                yield frame
+            return
         bank = budget_bank.BankStore(chat._task_store()) if conv and conv.get('bot_id') else None
         row = bank.get(user) if bank else None
         private = bool(row and row['private'].get('private_mode'))
@@ -132,6 +145,75 @@ def install(chat):
 
     private_stream._private_budget_boundary = private_stream
     chat.stream_chat = private_stream
+
+
+def open_budget(chat, owner, source, text, request_id, cancel_event):
+    """Render an owner's saved budget without a model or workspace dispatch."""
+    if cancel_event is not None and cancel_event.is_set():
+        return [{'type': 'status', 'status': 'cancelled', 'content': ''}]
+
+    store = budget_worksheet.WorksheetStore(chat._task_store())
+    bot_id, _, private = store.binding(owner)
+    destination = None
+    if not bot_id:
+        content = 'There is no configured budget to open. Set up Budget Bot under Settings to start one.'
+    else:
+        try:
+            value = store.view(owner)
+            if source and source.get('bot_id') == bot_id and not source.get('workspace_id'):
+                destination = source
+            else:
+                destination = chat.open_bot_conversation(owner, bot_id)
+        except (ValueError, LookupError, chat.BotUnavailable) as exc:
+            content = str(exc)
+        else:
+            lines = []
+            if private:
+                try:
+                    lines.append(summary(display_snapshot(store.model_view(owner))))
+                except budget_bank.provider.BankError:
+                    lines.append('Saved bank totals could not be loaded.')
+            if value['current_minor'] is None:
+                lines.append('Set a starting balance to see your 30-day forecast.')
+            else:
+                currency = value['currency']
+                if value['source'] == 'manual':
+                    lines.append(f"**Worksheet balance** {money(value['current_minor'], currency)}")
+                lines.append(f"**Lowest projected balance over 30 days** {money(value['low_minor'], currency)}")
+                if value['before_income_minor'] is not None:
+                    remaining = money(value['before_income_minor'], currency)
+                    lines.append(f"**Before your next income on {value['next_income']}** {remaining}")
+            if not value['rows']:
+                lines.append('There are no scheduled bills or income on the worksheet yet.')
+            content = '\n\n'.join(lines)
+
+    source = source or destination
+    if not source:
+        return [{'type': 'status', 'status': 'complete', 'content': content}]
+    target_id = destination['conversation_id'] if destination else None
+    if destination and target_id != source['conversation_id']:
+        save_open_turn(chat, owner, destination, text, content, request_id, target_id, private)
+        content = 'Your budget summary is ready in Budget Bot. Open the worksheet to see your upcoming bills and forecast.'
+    save_open_turn(chat, owner, source, text, content, request_id, target_id,
+                   private and source is destination)
+    return [
+        {'type': 'conversation', 'conversation_id': source['conversation_id']},
+        {'type': 'status', 'status': 'complete', 'content': content,
+         **({'budget_worksheet': {'conversation_id': target_id}} if target_id else {})},
+    ]
+
+
+def save_open_turn(chat, owner, conv, text, content, request_id, target_id, private):
+    user = chat._append_message(owner, conv, 'user', text,
+        identity=f'turn-{request_id}-user' if request_id else None)
+    answer = chat._append_message(owner, conv, 'assistant', content,
+        identity=f'turn-{request_id}-assistant' if request_id else None)
+    if target_id:
+        answer['budget_worksheet'] = {'conversation_id': target_id}
+    if private:
+        user['budget_private'] = answer['budget_private'] = True
+        answer['budget_formatted'] = True
+    chat._write(owner, conv)
 
 
 def worksheet_frames(chat, owner, conv, text, request_id, cancel_event):

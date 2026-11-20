@@ -58,6 +58,7 @@ export async function consumeStream(stream, handlers = {}) {
           ...(event.email_draft ? { email_draft: event.email_draft } : {}),
           ...(event.gmail_cleanup ? { gmail_cleanup: event.gmail_cleanup } : {}),
           ...(event.maps_route ? { maps_route: event.maps_route } : {}),
+          ...(event.budget_worksheet ? { budget_worksheet: event.budget_worksheet } : {}),
           ...(event.developer_result ? { developer_result: true, events: event.events || [] } : {}),
           ...(event.developer_has_changes ? { developer_has_changes: true } : {}),
           ...(event.developer_verification ? { developer_verification: event.developer_verification } : {}),

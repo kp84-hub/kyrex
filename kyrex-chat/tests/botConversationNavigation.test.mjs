@@ -23,7 +23,8 @@ for(let i=1;i<=4;i++) save('calendar-'+i,'calendar','Calendar history '+i,'Saved
 records.get('calendar-1').activity={kind:'task',task_id:'pending',status:'awaiting_approval',text:'Calendar change needs approval'};
 save('plain-1',null,'New chat','First ordinary chat.'); save('plain-2',null,'New chat','Second ordinary chat.');
 const roster=[{id:'chief',name:'The Overwatcher',status:'running'},
-  {id:'calendar',name:'Calendar Bot',status:'running'}, {id:'dev',name:'Developer Bot',status:'running'}];
+  {id:'calendar',name:'Calendar Bot',status:'running'}, {id:'dev',name:'Developer Bot',status:'running'},
+  {id:'budget',name:'Budget Bot',status:'running'}];
 const posts=[]; let sequence=0,holdCalendar=false,releaseCalendar;
 const response=value=>({ok:true,status:200,json:async()=>value});
 const latest=bot=>[...records.values()].reverse().find(row=>row.bot_id===bot);
@@ -31,6 +32,9 @@ globalThis.fetch=async(url,options={})=>{
   if(options.method==='POST') posts.push({url,body:JSON.parse(options.body || '{}')});
   if(url==='/api/chat/onboarding') return response({required:false,step:'ready'});
   if(url==='/api/bots') return response({bots:roster});
+  if(url==='/api/automations/budget/worksheet') return response({currency:'USD',
+    today:'2026-11-20', source:'none', current_minor:null, before_income_minor:null,
+    low_minor:null, rows:[], chart:[]});
   if(url==='/api/conversations' && options.method==='POST') {
     const body=JSON.parse(options.body); return response(save('created-'+(++sequence),body.bot_id || null,'New chat',''));
   }
@@ -78,6 +82,20 @@ try {
   assert.equal(picker().value,'dev','a slow earlier selection cannot switch away from the later Bot');
   assert.match(node.querySelector('.message-list').textContent,/Saved dev history/);
   assert.ok(!posts.some(p=>/\/api\/chat$|\/api\/task|\/respond|\/approve/.test(p.url)),'navigation never submits or approves work');
+  const budgetId = 'b'.repeat(32);
+  const budget = save(budgetId, 'budget', 'Budget Bot', 'Private bank summary');
+  budget.automation = 'budget-worksheet';
+  budget.latest_update = 'Budget summary ready.';
+  records.get('dev-chat').messages.push({id:'budget-link', role:'assistant',
+    content:'Your budget summary is ready.', budget_worksheet:{conversation_id:budgetId}});
+  await choose('chief'); await choose('dev');
+  const worksheetButton = [...node.querySelectorAll('button')]
+    .find(button => button.textContent.trim() === 'Open budget worksheet');
+  assert.ok(worksheetButton);
+  await act(async () => { worksheetButton.click(); });
+  assert.ok(node.querySelector('section[aria-label="Budget worksheet"]'));
+  assert.equal(localStorage.getItem('kyrex-chat.activeConversationId'), budgetId);
+  assert.doesNotMatch(node.textContent, /Private bank summary/);
 } finally {
   await act(async()=>root.unmount()); node.remove(); delete globalThis.EventSource;
 }
