@@ -9,7 +9,7 @@ import uuid
 from zoneinfo import ZoneInfo
 
 import budget_bank
-from budget_watch import cid, eligible
+from budget_watch import eligible
 import connectors
 
 HORIZON = 30
@@ -26,8 +26,9 @@ _ENTRY = re.compile(
 _BALANCE = re.compile(rf'(?:set )?(?:my )?starting balance (?:is |to )?({AMOUNT})(?: (?:on )?({_DATE_TEXT}))?', re.I)
 _SETTLE = re.compile(r'mark (.{1,80}) (?:paid|received|settled)', re.I)
 _CHANGE_AMOUNT = re.compile(rf'(?:change|update) (.{{1,80}}) to ({AMOUNT})', re.I)
-_SHOW = re.compile(r'(?:show (?:me )?(?:my |the )?(?:budget )?worksheet|'
-                   r'(?:budget )?worksheet|how much (?:do|will) i have (?:left )?(?:until|before) payday)', re.I)
+_SHOW = re.compile(r'(?:(?:(?:show|open|view|pull up) (?:me )?(?:my |the )?)?'
+                   r'(?:budget )?worksheet(?: for (?:this month|the next 30 days))?|'
+                   r'how much (?:do|will) i have (?:left )?(?:until|before) (?:my next )?payday)', re.I)
 
 
 def _day(value):
@@ -154,16 +155,20 @@ class WorksheetStore(budget_bank.BankStore):
                     PRIMARY KEY(owner, identity));
             ''')
 
-    def context(self, owner, conv):
-        """Only the existing owner-bound Budget Bot conversation has a worksheet."""
-        if not conv or conv.get('conversation_id') != cid(owner):
-            raise LookupError('Open your Budget Bot conversation to use the worksheet.')
+    def binding(self, owner):
         bank = self.get(owner)
-        private = bank and bank['private'].get('private_mode')
+        private = bool(bank and bank['private'].get('private_mode'))
         settings = bank['private'] if private else self.settings(owner)
         bot_id = bank['bot_id'] if private else settings.get('bot_id')
-        if not bot_id or bot_id != conv.get('bot_id'):
+        return bot_id, settings, private
+
+    def context(self, owner, conv=None):
+        """Require the owner's configured Budget Bot and recheck its access."""
+        bot_id, settings, private = self.binding(owner)
+        if not bot_id:
             raise LookupError('Configure Budget Bot in Settings to open its worksheet.')
+        if conv is not None and (bot_id != conv.get('bot_id') or conv.get('workspace_id')):
+            raise LookupError('Open your Budget Bot conversation to use the worksheet.')
         eligible(owner, bot_id, require_running=False, email=False)
         currency = settings.get('currency') or settings.get('dollar_currency', 'USD')
         zone = settings.get('time_zone')
@@ -183,7 +188,7 @@ class WorksheetStore(budget_bank.BankStore):
             raise ValueError('Worksheet storage is unavailable.')
         return row['revision'], plan
 
-    def view(self, owner, conv):
+    def view(self, owner, conv=None):
         today, currency, private, _ = self.context(owner, conv)
         with self.db() as db:
             revision, plan = self._plan(db, owner, currency)

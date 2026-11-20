@@ -8,7 +8,6 @@ import budget_api
 import budget_bank_api
 import budget_worksheet
 import chat_service
-from budget_watch import cid
 
 router = APIRouter(prefix='/api/automations/budget/worksheet', tags=['automations'])
 
@@ -39,7 +38,6 @@ def edit(request: Request, body: Edit):
 
 def view(owner, edit=None):
     store = budget_worksheet.WorksheetStore(chat_service._task_store())
-    conv = chat_service.get_conversation(owner, cid(owner))
     if edit:
-        store.mutate(owner, conv, [edit.model_dump(exclude={'revision'})], revision=edit.revision)
-    return store.view(owner, conv)
+        store.mutate(owner, None, [edit.model_dump(exclude={'revision'})], revision=edit.revision)
+    return store.view(owner)

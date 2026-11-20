@@ -2514,8 +2514,12 @@ def _conversation_activity(user: str, conversation_id: str) -> Optional[dict]:
 
 
 def list_conversations(user: str) -> list[dict]:
-    from budget_watch import cid as budget_conversation_id
-    budget_id = budget_conversation_id(user)
+    from budget_worksheet import WorksheetStore
+
+    try:
+        worksheet_bot, _, _ = WorksheetStore(_task_store()).binding(user)
+    except Exception:
+        worksheet_bot = None
     d = _user_dir(user)
     out = []
     for p in sorted(d.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
@@ -2569,7 +2573,8 @@ def list_conversations(user: str) -> list[dict]:
             "latest_update": latest_update,
             "workspace_id": data.get("workspace_id"),
             "bot_id": data.get("bot_id"),
-            "automation": "budget-worksheet" if p.stem == budget_id else data.get("automation"),
+            "automation": ("budget-worksheet" if worksheet_bot and data.get("bot_id") == worksheet_bot
+                           and not data.get("workspace_id") else data.get("automation")),
             # Durable active work (a pending/running Bot task or delegation),
             # or None. The sidebar renders it as a secondary line and updates
             # it live from the same task's Flux stream — no polling.

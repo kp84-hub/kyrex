@@ -105,7 +105,8 @@ def test_bank_baseline_never_deducts_a_settled_bill_twice(b):
 
 
 def test_normal_chat_can_add_and_settle_without_a_provider_and_retries_are_safe(f):
-    cid = budget_api.ensure_conversation('alice', 'budget')
+    f.registry['budget']['rift'] = str(f.tmp_path)
+    cid = chat_service.create_conversation('alice', title='Existing Budget Bot', bot_id='budget')['conversation_id']
     async def other(*args, **kwargs):
         raise AssertionError('Worksheet turn should not go to the provider.')
         yield {}
@@ -130,3 +131,42 @@ def test_normal_chat_can_add_and_settle_without_a_provider_and_retries_are_safe(
     assert [m['id'] for m in conv['messages']].count('turn-paid-user') == 1
     assert all(not m.get('budget_private') for m in conv['messages'])
     assert worksheet.command('What did I spend last month?', date.today()) == (None, [])
+
+
+def test_existing_private_budget_chat_shares_the_worksheet_without_a_canonical_thread(b):
+    b.setup()
+    b.f.registry['budget']['rift'] = str(b.f.tmp_path)
+    owner = 'alice'
+    conv = chat_service.create_conversation(owner, title='Existing Budget Bot', bot_id='budget')
+    cid = conv['conversation_id']
+    assert cid != worksheet.budget_bank.cid(owner)
+
+    b.f.app.include_router(api.router)
+    initial = b.f.client.get(PATH)
+    assert initial.status_code == 200
+    assert initial.json()['rows'] == []
+    assert next(row for row in chat_service.list_conversations(owner)
+                if row['conversation_id'] == cid)['automation'] == 'budget-worksheet'
+    assert b.f.client.get(PATH, headers={'x-user': 'bob'}).status_code == 409
+
+    async def other(*args, **kwargs):
+        raise AssertionError('Private worksheet turns should avoid generic chat.')
+        yield {}
+
+    def provider(*args, **kwargs):
+        raise AssertionError('Private worksheet turns should avoid the model.')
+
+    chat = SimpleNamespace(stream_chat=other, get_conversation=chat_service.get_conversation,
+        _task_store=lambda: b.f.tasks, _WORKSPACE_UNSET=chat_service._WORKSPACE_UNSET,
+        _append_message=chat_service._append_message, _write=chat_service._write,
+        resolve_bot_for_user=chat_service.resolve_bot_for_user, get_provider=provider)
+    budget_bank_chat.install(chat)
+
+    async def send(text, request):
+        return [frame async for frame in chat.stream_chat(owner, cid, text, request_id=request)]
+
+    reply = asyncio.run(send('Show my budget worksheet', 'show'))[-1]
+    assert reply['status'] == 'complete' and '30-day forecast' in reply['content']
+    added = asyncio.run(send('Internet is $80 on the 25th every month', 'add'))[-1]
+    assert added['status'] == 'complete' and 'Saved the row' in added['content']
+    assert b.f.client.get(PATH).json()['rows'][0]['title'] == 'Internet'
