@@ -68,7 +68,7 @@ export default function VoiceControls({ onConversation, onResult, onPhaseChange,
   const start = (wake, takeover = false) => { setState({ phase: 'starting' }); client.current.start(wake, takeover); };
   const status = state.phase === 'elsewhere'
     ? (state.device ? `Voice is listening on ${state.device}.` : 'Voice is listening on another device.')
-    : labels[state.phase];
+    : (state.phase === 'working' && state.progress) || labels[state.phase];
   const level = Math.max(0, Math.min(100, Number(state.level) || 0));
   const interruptible = ['working', 'synthesizing', 'speaking'].includes(state.phase);
   const controls = <div className="voice-controls" ref={container}>

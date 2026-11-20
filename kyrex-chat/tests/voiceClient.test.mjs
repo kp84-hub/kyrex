@@ -38,7 +38,12 @@ const resampler = new Resampler(48000), whole = new Resampler(48000).push(values
 assert.deepEqual([...resampler.push(values.slice(0, 256)), ...resampler.push(values.slice(256))], [...whole]);
 const wav = new DataView(await wavBlob([new Float32Array(3200).fill(.1)]).arrayBuffer());
 assert.equal(wav.getUint32(24, true), 16000); assert.equal(wav.getUint16(22, true), 1);
-const capture = new CommandCapture(); assert.equal(capture.push(new Float32Array(3200).fill(.1)), null); assert.equal(capture.push(new Float32Array(19200)), 'done');
+const capture = new CommandCapture();
+assert.equal(capture.push(new Float32Array(3200).fill(.1)), null);
+assert.equal(capture.push(new Float32Array(12800)), null, 'An 800 ms pause does not send the command');
+assert.equal(capture.push(new Float32Array(3200).fill(.1)), null, 'More speech resets the silence timer');
+assert.equal(capture.push(new Float32Array(14399)), null);
+assert.equal(capture.push(new Float32Array(1)), 'done', '900 ms of trailing silence sends the command');
 assert.equal(new CommandCapture().push(new Float32Array(128000)), 'empty');
 const stream = new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode('data: {"type":"done","content":"Hello Keith."}\n\n')); controller.close(); } });
 assert.equal(await voiceReply({ body: stream }), 'Hello Keith.');
