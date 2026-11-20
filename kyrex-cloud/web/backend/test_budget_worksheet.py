@@ -170,3 +170,59 @@ def test_existing_private_budget_chat_shares_the_worksheet_without_a_canonical_t
     added = asyncio.run(send('Internet is $80 on the 25th every month', 'add'))[-1]
     assert added['status'] == 'complete' and 'Saved the row' in added['content']
     assert b.f.client.get(PATH).json()['rows'][0]['title'] == 'Internet'
+
+
+def test_open_budget_from_developer_chat_uses_the_bound_bot_and_keeps_summary_private(b):
+    b.setup()
+    b.response['added'] = [b.tx()]
+    b.store.sync('alice', b.store.get('alice')['revision'])
+    b.f.registry['budget']['rift'] = str(b.f.tmp_path)
+    b.f.registry['developer'] = {
+        **b.f.registry['budget'], 'id': 'developer', 'name': 'Developer Bot',
+        'policy': {'fs:read': 0},
+    }
+    owner = 'alice'
+    source = chat_service.create_conversation(owner, title='Code chat', bot_id='developer')
+    target = budget_api.ensure_conversation(owner, 'budget')
+
+    async def other(*args, **kwargs):
+        raise AssertionError('Opening a budget should never dispatch workspace work or call a model.')
+        yield {}
+
+    chat = SimpleNamespace(stream_chat=other, get_conversation=chat_service.get_conversation,
+        open_bot_conversation=chat_service.open_bot_conversation, _task_store=lambda: b.f.tasks,
+        _WORKSPACE_UNSET=chat_service._WORKSPACE_UNSET, BotUnavailable=chat_service.BotUnavailable,
+        _append_message=chat_service._append_message, _write=chat_service._write)
+    budget_bank_chat.install(chat)
+
+    async def send():
+        return [frame async for frame in chat.stream_chat(owner, source['conversation_id'],
+            'Open the budget', request_id='budget')]
+
+    reply = asyncio.run(send())[-1]
+    assert reply['status'] == 'complete'
+    assert reply['budget_worksheet'] == {'conversation_id': target}
+    assert '145.00' not in reply['content']
+    original = chat_service.get_conversation(owner, source['conversation_id'])['messages'][-1]
+    assert original['budget_worksheet'] == {'conversation_id': target}
+    assert 'Bank budget' not in original['content']
+    saved = chat_service.get_conversation(owner, target)['messages'][-1]
+    assert saved.get('budget_private') is True
+    assert '**Posted spending** USD 145.00' in saved['content']
+    assert '**Estimated cash in selected checking and savings** USD 855.00' in saved['content']
+    assert 'PRIVATE-MERCHANT' not in saved['content']
+    previews = {row['conversation_id']: row['latest_update'] for row in chat_service.list_conversations(owner)}
+    assert previews[target] == 'Budget summary ready.'
+    assert '145.00' not in previews[source['conversation_id']]
+    asyncio.run(send())
+    assert len(chat_service.get_conversation(owner, target)['messages']) == 2
+
+
+def test_open_budget_without_saved_data_completes_instead_of_dispatching(f):
+    owner = 'bob'
+    conv = chat_service.create_conversation(owner, title='Chat')
+    chat = SimpleNamespace(_task_store=lambda: f.tasks, _append_message=chat_service._append_message,
+        _write=chat_service._write, BotUnavailable=chat_service.BotUnavailable)
+    reply = budget_bank_chat.open_budget(chat, owner, conv, 'Open the budget', 'budget', None)[-1]
+    assert reply['status'] == 'complete' and 'no configured budget' in reply['content'].lower()
+    assert 'budget_worksheet' not in reply

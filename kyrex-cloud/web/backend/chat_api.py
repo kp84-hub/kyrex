@@ -189,6 +189,7 @@ async def _drive_stream(gen, request_id: str, conversation_id: str):
                                       **({'email_draft':frame['email_draft']} if frame.get('email_draft') else {}),
                                       **({'gmail_cleanup':frame['gmail_cleanup']} if frame.get('gmail_cleanup') else {}),
                                       **({'maps_route': frame['maps_route']} if frame.get('maps_route') else {}),
+                                      **({'budget_worksheet': frame['budget_worksheet']} if frame.get('budget_worksheet') else {}),
                                       **developer,
                                       **({"developer_has_changes": True} if frame.get("developer_has_changes") else {})})
                 elif status == "cancelled":

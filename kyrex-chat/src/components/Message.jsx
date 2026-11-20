@@ -151,7 +151,7 @@ function ApprovalPrompt({ approval, onRespond, onApprove }) {
   );
 }
 
-export default function Message({ message, conversationId, onRetry, isLastAssistant, onRespondApproval, onOpenConversation, onApproveDelegated, onRouteFromHere, onReviewDeveloperChanges }) {
+export default function Message({ message, conversationId, onRetry, isLastAssistant, onRespondApproval, onOpenConversation, onOpenBudgetWorksheet, onApproveDelegated, onRouteFromHere, onReviewDeveloperChanges }) {
   const [resolvedSuggestion, setResolvedSuggestion] = useState(null);
   const isUser = message.role === 'user';
   // Render-time guard: assistant text NEVER renders internal engine control
@@ -214,6 +214,12 @@ export default function Message({ message, conversationId, onRetry, isLastAssist
           ? <button type="button" className="delegated-chat-link"
             onClick={() => onOpenConversation(message.delegation_result.conversation_id)}>
             Open {message.delegation_result.bot_name || 'Bot'} chat
+          </button> : null}
+        {!isUser && !message.streaming && onOpenBudgetWorksheet
+          && /^[a-f0-9]{32}$/.test(message.budget_worksheet?.conversation_id || '')
+          ? <button type="button" className="delegated-chat-link"
+            onClick={() => onOpenBudgetWorksheet(message.budget_worksheet.conversation_id)}>
+            Open budget worksheet
           </button> : null}
         {message.task && !message.developer_result && (
           <div className="message-task">

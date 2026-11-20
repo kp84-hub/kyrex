@@ -196,6 +196,13 @@ export default function App() {
     setSidebarOpen(false);
   };
 
+  const openBudgetWorksheet = async (id) => {
+    if (id !== activeId && !(await loadConversation(id))) return;
+    await refreshList({ silent: true });
+    setWorksheetConversation(id);
+    setSidebarOpen(false);
+  };
+
   const startNewChat = async () => {
     if (setupRequired) return;
     await newChat();
@@ -457,6 +464,7 @@ export default function App() {
             }}
             delegations={liveDelegations.filter(d => !hasDeveloperTarget(d))}
             onOpenConversation={selectConversation}
+            onOpenBudgetWorksheet={openBudgetWorksheet}
             onReviewDeveloperChanges={reviewBot ? openWorkspaceReview : undefined}
           />}
           <Composer compact={kbotMode} conversationId={activeId} onSend={send} onStop={stop} isGenerating={isGenerating} isConversationReady={isConversationReady} providers={providers} activeProvider={activeProvider} activeModel={activeModel} activeBotId={activeBotId} onChangeProvider={changeProvider} workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} onAttachWorkspace={attachWorkspace} voiceAnchorRef={setVoiceAnchor} />
