@@ -26,6 +26,9 @@ FAILURES = {
     'profile_busy': ('browser_launch', 'The browser profile is busy. Finish its current task or close its private viewer.'),
     'host_update_required': ('dispatch', 'Update the Browser Host image to enable the browser connection test.'),
     'site_permissions': ('site_access', 'The website is blocked by the Bot or Host site permissions.'),
+    'bot_site_permissions': ('site_access', 'The website is blocked by the Browser Bot’s site permissions. Check Browser sites in the Bot’s settings.'),
+    'host_site_permissions': ('site_access', 'The website is blocked by the Browser Host’s site permissions. The host operator can check its site allowlist.'),
+    'private_destination': ('site_access', 'The browser blocked a private or local network destination.'),
     'browser_launch_failed': ('browser_launch', 'The host received the task but could not launch its browser.'),
     'site_unreachable': ('site_access', 'The browser could not reach the requested website.'),
     'login_required': ('sign_in', 'Sign in through this Browser Bot’s private viewer, then close the viewer.'),
@@ -86,9 +89,28 @@ def is_probe(task_text):
         return False
 
 
+def failure_reason(error, result):
+    """Find the failure text whether it came from the dispatcher or browser."""
+    if error:
+        return error
+    errors = result.get('errors')
+    if isinstance(errors, list):
+        message = ' '.join(str(item)[:4000] for item in errors[:3])
+        if message.strip():
+            return message
+    return result.get('final_response') or 'failed'
+
+
 def failure(reason):
     text = str(reason or '')[:12000].lower()
     if text in FAILURES: return text
+    if 'private or local network destinations are blocked' in text:
+        return 'private_destination'
+    if 'allowlist' in text:
+        if 'blocked on host:' in text:
+            return 'host_site_permissions'
+        if 'browser task blocked:' in text:
+            return 'bot_site_permissions'
     # More specific dispatch failures MUST precede the legacy HostUnavailable.
     checks = (
         (('browser bot is not running',), 'bot_inactive'),
@@ -99,6 +121,7 @@ def failure(reason):
         (('dispatch request not found',), 'dispatch_missing'),
         (('dispatch already terminal',), 'dispatch_terminal'),
         (('browserchannelunavailable',), 'dispatch_unavailable'),
+        (('no browser host is bound',), 'host_unbound'),
         (('connection lost', 'connection dropped', 'not connected'), 'connection_lost'),
         (('manualcontrolactive', 'one task at a time', 'browser is busy'), 'profile_busy'),
         (('browser_diagnostic', 'diagnostic capability'), 'host_update_required'),
@@ -155,8 +178,7 @@ def report(row):
     detail = detail if isinstance(detail, dict) else {}
     reason = row.get('error') or ''
     if not reason and result.get('status') == 'error':
-        reason = ' '.join(str(e) for e in result.get('errors', [])[:3]) if isinstance(result.get('errors'), list) else ''
-        reason = reason or result.get('final_response') or 'failed'
+        reason = failure_reason(None, result)
     code = detail.get('code') if detail.get('code') in FAILURES else failure(reason) if reason else ''
     status = row.get('status')
     if status in {'pending', 'executing'} and row.get('deadline_at'):

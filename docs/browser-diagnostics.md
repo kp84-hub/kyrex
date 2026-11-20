@@ -4,6 +4,13 @@ Connections → Browser now offers an explicit **Test browser connection** actio
 and saved recent tests/failures. Select a read-authorized Browser Bot and enter
 an allowed public HTTPS page URL. No model inference is involved.
 
+To allow general web research, open the Browser Bot’s settings, choose
+**Browser sites → Use all public sites**, then **Save browser sites**. This
+saves the existing public-site wildcard for that Bot. If its host configures
+a narrower site list, that list still applies. The host operator controls it
+through `KYREX_HOST_ALLOWLIST` in the agent's configuration. A host set to
+`*` still applies the restrictions configured on each Bot.
+
 The test uses the existing owner/Bot binding, HostManager, durable
 `browser_dispatches` queue, poller, host-side allowlist intersection and exclusive
 profile lock. It reports host connection, task delivery, browser launch, website
