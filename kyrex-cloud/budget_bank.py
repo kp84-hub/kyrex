@@ -11,6 +11,8 @@ from budget_watch import BudgetStore, cid
 
 POLICY = {'budget:read': 0, '*': 'deny'}
 PROMPT = """You are Budget Bot. Use the current host-provided budget snapshot.
+Title these summaries “Bank budget”. The Budget worksheet in Chat shows the
+user's planned bills and income, starting balance and 30-day forecast.
 The host has already read and calculated it; private Chat has no tools to call.
 Use its exact dates and formatted currency amounts. Never rescale an amount,
 recalculate a balance, or use earlier replies as a source of financial figures.

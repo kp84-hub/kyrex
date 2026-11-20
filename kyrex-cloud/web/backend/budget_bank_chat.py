@@ -104,18 +104,10 @@ def install(chat):
             image_ids=None, device_location=None, voice_reply=False):
         # Managed/new-account chat may not have created a conversation yet.
         conv = chat.get_conversation(user, conversation_id) if conversation_id else None
-        row = budget_bank.BankStore(chat._task_store()).get(user) if conv and conv.get('bot_id') else None
-        if (conv and conversation_id == budget_bank.cid(user) and not image_ids
-                and workspace_id in (None, '', chat._WORKSPACE_UNSET)):
-            reply = worksheet_reply(chat, user, conv, user_content, request_id, cancel_event)
-            if reply is not None:
-                if cancel_event is not None and cancel_event.is_set() and not reply:
-                    yield {'type': 'status', 'status': 'cancelled', 'content': ''}
-                    return
-                yield {'type': 'conversation', 'conversation_id': conversation_id}
-                yield {'type': 'status', 'status': 'complete', 'content': reply}
-                return
-        if row and row['private'].get('private_mode') and row['bot_id'] == conv['bot_id']:
+        bank = budget_bank.BankStore(chat._task_store()) if conv and conv.get('bot_id') else None
+        row = bank.get(user) if bank else None
+        private = bool(row and row['private'].get('private_mode'))
+        if private and row['bot_id'] == conv['bot_id']:
             chat.resolve_bot_for_user(user, conv['bot_id'])
             if image_ids or workspace_id not in (None, '', chat._WORKSPACE_UNSET):
                 raise chat.ChatUnavailable('Private Budget Bot accepts text and filtered budget totals only.')
@@ -123,6 +115,14 @@ def install(chat):
             async for frame in stream(chat, user, conv, user_content, request_id, cancel_event):
                 yield frame
             return
+        if (bank and not private and not image_ids
+                and workspace_id in (None, '', chat._WORKSPACE_UNSET)
+                and bank.settings(user).get('bot_id') == conv['bot_id']):
+            frames = worksheet_frames(chat, user, conv, user_content, request_id, cancel_event)
+            if frames is not None:
+                for frame in frames:
+                    yield frame
+                return
         kwargs = {'cancel_event': cancel_event, 'request_id': request_id,
             'fitness_read_only': fitness_read_only, 'image_ids': image_ids, 'device_location': device_location}
         if voice_reply: kwargs['voice_reply'] = True
@@ -134,7 +134,7 @@ def install(chat):
     chat.stream_chat = private_stream
 
 
-def worksheet_reply(chat, owner, conv, text, request_id, cancel_event):
+def worksheet_frames(chat, owner, conv, text, request_id, cancel_event):
     store = budget_worksheet.WorksheetStore(chat._task_store())
     try:
         today, _, _, _ = store.context(owner, conv)
@@ -145,7 +145,7 @@ def worksheet_reply(chat, owner, conv, text, request_id, cancel_event):
         if intent is None:
             return None
         if cancel_event is not None and cancel_event.is_set():
-            return ''
+            return [{'type': 'status', 'status': 'cancelled', 'content': ''}]
         budget_bank.eligible(owner, conv['bot_id'])
         if intent == 'write':
             content = store.mutate(owner, conv, actions, request_id=request_id)
@@ -167,7 +167,10 @@ def worksheet_reply(chat, owner, conv, text, request_id, cancel_event):
         chat._append_message(owner, conv, role, message,
             identity=f'turn-{request_id}-{role}' if request_id else None)
     chat._write(owner, conv)
-    return content
+    return [
+        {'type': 'conversation', 'conversation_id': conv['conversation_id']},
+        {'type': 'status', 'status': 'complete', 'content': content},
+    ]
 
 
 async def stream(chat, owner, conv, text, request_id, cancel_event):
@@ -181,6 +184,12 @@ async def stream(chat, owner, conv, text, request_id, cancel_event):
     if cancel.is_set():
         yield {'type': 'status', 'status': 'cancelled', 'content': ''}
         return
+    if not conv.get('workspace_id'):
+        frames = worksheet_frames(chat, owner, conv, text, request_id, cancel)
+        if frames is not None:
+            for frame in frames:
+                yield frame
+            return
     snapshot = display_snapshot(store.model_view(owner))
     command = ' '.join(text.strip().rstrip('?.!').split())
     refresh = _REFRESH.fullmatch(command)
