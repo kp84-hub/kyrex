@@ -63,6 +63,32 @@ def test_phone_text_uses_existing_chat_and_ignores_identity_injection(setup, mon
     assert client.post('/api/voice/chat', json={'message': 'hi', 'request_id': 'a' * 32}).status_code == 401
 
 
+@pytest.mark.parametrize('failure,code', [
+    ('[OpenAI Provider Error: Provider authentication failed. Check the API key. (HTTP 401)]', 'provider_auth'),
+    ('Provider request failed. Try again later. (HTTP 402)', 'provider_billing'),
+    ('Provider usage or rate limit reached. Try again later. (HTTP 429)', 'provider_limit'),
+    (None, 'chat_failed'),
+])
+def test_voice_chat_errors_have_safe_diagnoses_and_references(setup, monkeypatch, caplog, failure, code):
+    client, token, _ = setup
+    monkeypatch.setattr(chat_service, 'get_conversation', lambda user, cid: {'bot_id': 'overwatcher'})
+    private = 'synthetic-private-upstream-body'
+    async def stream(*args, **kwargs):
+        if failure is None:
+            raise RuntimeError(private)
+        yield {'type': 'status', 'status': 'error', 'message': f'{failure} {private}'}
+    monkeypatch.setattr(chat_service, 'stream_chat', stream)
+    request_id = 'a12c34de56' * 3 + 'ab'
+    response = client.post('/api/voice/chat', headers=lease(client, token),
+                           json={'message': 'fixture request', 'request_id': request_id})
+    frame, = (json.loads(line[6:]) for line in response.text.splitlines() if line.startswith('data: '))
+    assert frame['type'] == 'error' and frame['voice_error'] == code
+    assert frame['reference'] == request_id[:10]
+    assert frame['message'].startswith('The Overwatcher')
+    assert private not in response.text and private not in caplog.text
+    assert f'code={code} reference={request_id[:10]}' in caplog.text
+
+
 @pytest.mark.parametrize('message,identity', [('', 'a' * 32), ('x' * 4001, 'a' * 32), ([], 'a' * 32), ('hello', 'invalid')])
 def test_bad_transcripts_fail_before_execution(setup, message, identity):
     client, token, _ = setup

@@ -89,6 +89,26 @@ try {
 }
 console.log('Chat companion status, explicit browser switch and visible-page permission handling: passed');
 
+const errorRoot = createRoot(div);
+const opened = [];
+VoiceClient.prototype.start = async function() {
+  this.state('stopped', { error: 'The Overwatcher couldn’t finish this voice request.',
+    errorConversation: 'saved-voice-chat', errorReference: '1a2b3c4d5e' });
+};
+try {
+  await act(async () => errorRoot.render(React.createElement(VoiceControls, { onConversation: cid => opened.push(cid) })));
+  await act(async () => div.querySelector('[aria-label="Voice controls"]').click());
+  await openModes();
+  await act(async () => button('Talk now').click());
+  assert.match(document.querySelector('[role=alert]').textContent, /Reference 1a2b3c4d5e/);
+  await act(async () => button('Open voice chat').click());
+  assert.deepEqual(opened, ['saved-voice-chat']);
+  assert.equal(document.querySelector('[role=dialog]'), null);
+} finally {
+  await act(async () => errorRoot.unmount());
+  VoiceClient.prototype.start = originalStart;
+}
+
 // Native Talk is explicit input to the existing voice UI, never a second
 // session or a silent takeover. A second shortcut cannot restart active work.
 let desktopStarts = 0;

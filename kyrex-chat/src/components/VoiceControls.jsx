@@ -96,9 +96,13 @@ export default function VoiceControls({ onConversation, onResult, onPhaseChange,
             <h2 className="voice-status" role="status">{state.phase === 'stopped' && !state.error ? 'Ready' : status}</h2>
             {state.phase === 'elsewhere' && <p className="voice-device-notice">Switching will stop listening on that device.</p>}
           </div>
-          {state.error && <p role="alert" className="voice-error">{state.error}</p>}
+          {state.error && <p role="alert" className="voice-error">
+            {state.error}{state.errorReference && <> Reference {state.errorReference}.</>}
+          </p>}
         </div>
         <div className="voice-actions">
+          {!active && state.errorConversation && onConversation && <button type="button" className="voice-primary"
+            onClick={() => { minimize(); onConversation(state.errorConversation); }}>Open voice chat</button>}
           {state.phase === 'elsewhere' ? <button type="button" className="voice-primary" disabled={disabled} onClick={() => start(client.current.wake, true)}><VoiceIcon name="mic" />Use this browser</button>
             : !active ? <VoiceModeButton disabled={disabled} onSelect={wake => start(wake)} /> : <>
               {state.phase === 'listening' && <VoiceModeButton disabled={disabled} onSelect={wake => { if (!wake) client.current.capture(); }} />}
