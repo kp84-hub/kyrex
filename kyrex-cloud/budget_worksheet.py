@@ -24,6 +24,7 @@ _DATE_TEXT = r'\d{4}-\d{2}-\d{2}|today|tomorrow|(?:(?:this|next) )?(?:' + '|'.jo
 _MONTHS = {name.lower(): i for i, name in enumerate(calendar.month_name) if name}
 _MONTHS.update({name.lower(): i for i, name in enumerate(calendar.month_abbr) if name})
 _MONTHS['sept'] = 9
+_COMMAND_QUOTES = {'"': '"', "'": "'", '“': '”', '‘': '’'}
 _MONTH_DATE = re.compile(
     rf'(?P<month>{"|".join(_MONTHS)})\.? (?P<day>\d{{1,2}})(?:st|nd|rd|th)?'
     r'(?:,? (?P<year>\d{4}))?', re.I)
@@ -341,9 +342,22 @@ def _spoken_date(value, today, repeat='once'):
     return _day(value)
 
 
+def command_text(text):
+    """Accept a command copied with quotation marks and keep its punctuation."""
+    text = text.strip()
+    closing = _COMMAND_QUOTES.get(text[:1])
+    if not closing:
+        return text
+    text = text[1:].lstrip()
+    body, quote, suffix = text.rpartition(closing)
+    if quote and not suffix.strip(' .!?\t\r\n'):
+        return body.rstrip() + suffix.strip()
+    return text
+
+
 def command(text, today):
     """Recognize worksheet commands without sending financial fields to a model."""
-    text = text.strip()
+    text = command_text(text)
     statement = text.rstrip('.!?').strip()
     if _SHOW.fullmatch(statement):
         return 'show', []

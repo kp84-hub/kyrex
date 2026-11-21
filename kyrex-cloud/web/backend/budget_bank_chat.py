@@ -113,7 +113,7 @@ def install(chat):
         # Managed/new-account chat may not have created a conversation yet.
         conv = chat.get_conversation(user, conversation_id) if conversation_id else None
         if not image_ids and not fitness_read_only and _OPEN.fullmatch(
-                ' '.join(user_content.strip().rstrip('?.!').split())):
+                ' '.join(budget_worksheet.command_text(user_content).rstrip('?.!').split())):
             for frame in open_budget(chat, user, conv, user_content, request_id, cancel_event):
                 yield frame
             return
