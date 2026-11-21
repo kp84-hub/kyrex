@@ -1050,8 +1050,10 @@ def install(chat_service, dev_bot) -> None:
         fixed_development = (bot is not None and bot.get('owner') == user
                              and _is_coordinator(chat_service, bot)
                              and developer_action(user_content, (conv or {}).get('messages', [])))
+        import daily_reminder_chat
+        fixed_reminder = not image_ids and daily_reminder_chat.requested(user_content, conv, request_id)
         # Native specialist routes do not need a second routing decision.
-        if bot is not None and not (fixed_fitness or fixed_vision or fixed_maps or fixed_development):
+        if bot is not None and not (fixed_fitness or fixed_vision or fixed_maps or fixed_development or fixed_reminder):
             from kyrex.conversation_policy import routing_dialogue
             # Only prior owner asks are needed for Bot/source routing. Full
             # assistant/tool results stay with the answering Bot. Private

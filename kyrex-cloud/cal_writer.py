@@ -6,12 +6,9 @@ OWNER's own text into ONE safe create intent, validates it against a bounded
 field set, renders the EXACT payload shown at the confirmation gate, and
 formats the safe receipt. Nothing here touches the network or a model.
 
-Boundary (deliberately narrow): title/start/end/all_day and optional location
-and description; the
-owner's PRIMARY calendar only; America/New_York only. Guests, recurrence,
-updates, deletes, attachments, conferencing, reminders,
-or arbitrary calendar ids are rejected on the way IN or OUT. An ambiguous or
-malformed request fails closed.
+Boundary: the owner's selected calendar, America/New_York, and one event or
+one daily reminder series. Arbitrary recurrence, guests, updates, deletes,
+attachments, conferencing and caller-supplied calendar IDs are rejected.
 """
 from __future__ import annotations
 
@@ -25,7 +22,7 @@ TIMEZONE = "America/New_York"
 MAX_TITLE_CHARS = 200
 REQUIRED_FIELDS = frozenset({"title", "start", "end", "all_day"})
 DETAIL_LIMITS = {"location": 500, "description": 2000}
-ALLOWED_FIELDS = REQUIRED_FIELDS | frozenset(DETAIL_LIMITS)
+ALLOWED_FIELDS = REQUIRED_FIELDS | frozenset(DETAIL_LIMITS) | {"daily_reminder"}
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _DATETIME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):00$")
@@ -83,6 +80,17 @@ _CONTEXT_START_RE = re.compile(
     r"(?P<clock>\d{1,2}(?::\d{2})?\s*[ap]\.?m|\d{1,2}:\d{2})(?!\w)",
     re.IGNORECASE,
 )
+_DAILY = r"(?:daily|every\s+day)"
+_DAILY_REMINDER_REQUEST = re.compile(
+    r"(?:(?:set up|set|add|create|schedule|make)\s+(?:me\s+)?(?:an?\s+)?"
+    r"(?P<daily>daily\s+)?(?:calendar\s+)?reminder\b|remind me\b)"
+    r"(?P<details>[^\r\n]*)", re.I)
+_REMINDER_CLOCK = re.compile(
+    r"(?P<title>.+?)\s+at\s+(?P<hour>\d{1,2})(?:[:.](?P<minute>\d{2}))?\s*(?P<period>[ap])\.?\s*m\.?"
+    r"(?:\s+(?:ET|EST|EDT|Eastern(?:\s+(?:(?:Standard|Daylight)\s+)?Time)?|America/New_York))?"
+    r"(?:\s+starting\s+(?P<date>" + _REQUEST_DATE + r"))?", re.I)
+DAILY_REMINDER_QUESTION = "What should I remind you about, and at what time each day? Include AM or PM."
+DAILY_REMINDER_EXAMPLE = "Give the reminder and one Eastern time, for example “Remind me to water the plants every day at 10:30 AM.”"
 
 
 class CalendarWriterError(Exception):
@@ -181,8 +189,47 @@ def calendar_and_purchase_question(text):
 
 
 def create_shaped(text):
-    return bool(re.match(r"^(?:create|add|schedule|book|reserve|make|set\s+up|put)\b",
-                         request_text(text), re.I))
+    return daily_reminder_details(text) is not None or bool(re.match(
+        r"^(?:create|add|schedule|book|reserve|make|set\s+up|put)\b", request_text(text), re.I))
+
+
+def daily_reminder_details(text):
+    """Identify an explicit daily reminder from the current owner message."""
+    match = _DAILY_REMINDER_REQUEST.fullmatch(request_text(text).rstrip('.!?').strip())
+    if not match:
+        return None
+    details = match['details'].strip()
+    cadence = re.search(r"\b" + _DAILY + r"(?=\s+(?:at\s+\d|starting\b)|$)", details, re.I)
+    if not (match['daily'] or cadence):
+        return None
+    if cadence:
+        details = (details[:cadence.start()].rstrip() + details[cadence.end():]).strip()
+    return re.sub(r"^(?:to|for|called|titled|named)\s+", "", details, count=1, flags=re.I)
+
+
+def daily_reminder_intent(details, *, now=None):
+    """Use the next local occurrence unless an explicit first date was given."""
+    match = _REMINDER_CLOCK.fullmatch(details.strip().rstrip('.!?'))
+    if not match:
+        raise CalendarWriterError(DAILY_REMINDER_EXAMPLE)
+    title = _request_title(match['title'])
+    if re.search(r"\b(?:starting|until|weekdays?|weekends?|every|recurr\w*|at\s+\d|"
+                 r"for\s+(?:the\s+next\s+)?\d+\s+(?:days?|weeks?|months?))\b", title, re.I):
+        raise CalendarWriterError(DAILY_REMINDER_EXAMPLE)
+    clock = _parse_time(f"{match['hour']}:{match['minute'] or '00'}{match['period']}m")
+    tz = ZoneInfo(TIMEZONE)
+    current = now or datetime.now(tz)
+    current = current.replace(tzinfo=tz) if current.tzinfo is None else current.astimezone(tz)
+    day = _request_date(match['date'], current) if match['date'] else current.date().isoformat()
+    start = datetime.fromisoformat(f"{day}T{clock}:00").replace(tzinfo=tz)
+    if start <= current:
+        if match['date']:
+            raise CalendarWriterError("The first reminder time has passed. Choose a future start date.")
+        start += timedelta(days=1)
+    end = start + timedelta(minutes=1)
+    return validate_intent({"title": title, "start": start.replace(tzinfo=None).isoformat(),
+                            "end": end.replace(tzinfo=None).isoformat(), "all_day": False,
+                            "daily_reminder": True})
 
 
 def create_candidate(text):
@@ -447,6 +494,9 @@ def parse_create_request(text: str, *, now=None, pending=None, previous_answer=N
     if pending:
         return complete_create_draft(raw, pending, now=now)
     raw = request_text(raw)
+    daily_details = daily_reminder_details(raw)
+    if daily_details is not None:
+        return daily_reminder_intent(daily_details, now=now)
     if _REMINDER_REFERENCE_RE.fullmatch(raw) or _CALENDAR_AND_PURCHASE_QUESTION_RE.fullmatch(raw):
         reminder = _reminder_draft(previous_answer, now)
         if reminder is not None:
@@ -549,7 +599,7 @@ def validate_intent(intent) -> dict:
     if unknown:
         raise CalendarWriterError(
             f"unsupported field(s): {', '.join(unknown)} — this slice supports "
-            "title, start, end, all_day, location, and description")
+            "title, start, end, all_day, location, description, and daily_reminder")
     missing = sorted(REQUIRED_FIELDS - set(intent))
     if missing:
         raise CalendarWriterError(f"missing field(s): {', '.join(missing)}")
@@ -583,6 +633,16 @@ def validate_intent(intent) -> dict:
         if end <= start:
             raise CalendarWriterError("the event end must be after its start")
     out = {"title": title, "start": start, "end": end, "all_day": all_day}
+    if "daily_reminder" in intent:
+        if intent["daily_reminder"] is not True or all_day:
+            raise CalendarWriterError("A daily reminder needs a specific start time.")
+        try:
+            first, last = datetime.fromisoformat(start), datetime.fromisoformat(end)
+        except ValueError:
+            raise CalendarWriterError("A daily reminder needs a valid clock time.") from None
+        if last - first != timedelta(minutes=1):
+            raise CalendarWriterError("A daily reminder needs a one-minute calendar slot.")
+        out["daily_reminder"] = True
     for key, limit in DETAIL_LIMITS.items():
         if key not in intent:
             continue
@@ -612,24 +672,33 @@ def to_google_event(intent: dict) -> dict:
     else:
         start = {"dateTime": intent["start"], "timeZone": TIMEZONE}
         end = {"dateTime": intent["end"], "timeZone": TIMEZONE}
-    return {"summary": intent["title"], "start": start, "end": end,
-            **{key: intent[key] for key in DETAIL_LIMITS if key in intent}}
+    event = {"summary": intent["title"], "start": start, "end": end,
+             **{key: intent[key] for key in DETAIL_LIMITS if key in intent}}
+    if intent.get("daily_reminder"):
+        event.update(recurrence=["RRULE:FREQ=DAILY"], transparency="transparent",
+                     reminders={"useDefault": False, "overrides": [{"method": "popup", "minutes": 0}]})
+    return event
 
 
-def payload_display(intent: dict) -> str:
+def payload_display(intent: dict, *, calendar=CALENDAR_ID) -> str:
     """The human-readable payload shown at (and approved at) the gate."""
     intent = validate_intent(intent)
+    repeat = ["repeat: every day", "ends: never", "notification: at the start", "availability: free"] if intent.get("daily_reminder") else []
     return "\n".join([
         f"title: {intent['title']}",
         f"start: {intent['start']}",
         f"end: {intent['end']}",
         f"all day: {'yes' if intent['all_day'] else 'no'}",
         f"timezone: {TIMEZONE}",
-        f"calendar: {CALENDAR_ID}",
-    ] + [f"{key}: {intent[key]}" for key in DETAIL_LIMITS if key in intent])
+        f"calendar: {calendar}",
+    ] + repeat + [f"{key}: {intent[key]}" for key in DETAIL_LIMITS if key in intent])
 
 
 def _human_when(intent: dict) -> str:
+    if intent.get("daily_reminder"):
+        start = datetime.fromisoformat(intent['start'])
+        clock = start.strftime('%I:%M %p').lstrip('0')
+        return f"every day at {clock} Eastern, starting {start.date().isoformat()}"
     if intent["all_day"]:
         return f"{intent['start']} (all day)"
     return (f"{intent['start'][:10]} {intent['start'][11:16]}\u2013"
@@ -639,7 +708,8 @@ def _human_when(intent: dict) -> str:
 def summary_line(intent: dict) -> str:
     """Starts with a harmless verb ("create") for the host's operation name."""
     intent = validate_intent(intent)
-    return f"create calendar event \u201c{intent['title']}\u201d \u2014 {_human_when(intent)}"
+    kind = 'daily reminder' if intent.get('daily_reminder') else 'calendar event'
+    return f"create {kind} \u201c{intent['title']}\u201d \u2014 {_human_when(intent)}"
 
 
 def intent_from_task(raw) -> dict:
