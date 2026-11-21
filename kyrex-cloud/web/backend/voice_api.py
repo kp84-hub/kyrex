@@ -1,6 +1,7 @@
 """One voice account for browser, Android and Windows; reuse ordinary Chat execution."""
 import asyncio
 import json
+import logging
 import os
 import re
 from contextlib import aclosing
@@ -17,6 +18,47 @@ from voice_speech import VoiceSpeech, SpeechError
 
 router = APIRouter()
 INTERRUPT_WAIT_SECONDS = 6
+logger = logging.getLogger("uvicorn.error")
+
+_CHAT_FAILURES = (
+    ("provider_config", r"no provider profile configured|model id must be|provider profile [^\n]{1,180}(?:not configured|no endpoint)",
+     "The Overwatcher needs a valid model and provider connection. Check its settings."),
+    ("provider_auth", r"provider authentication failed|http 401",
+     "The Overwatcher’s model provider rejected its credentials. Check the provider connection in Settings."),
+    ("provider_access", r"provider access was denied|http 403",
+     "The Overwatcher’s model provider refused access. Check the account and model permissions in Settings."),
+    ("provider_model", r"endpoint or model was not found|no model configured|http 404",
+     "The Overwatcher’s model is unavailable. Check its model and provider in Settings."),
+    ("provider_billing", r"http 402",
+     "The Overwatcher’s model provider returned a billing error. Check the provider account."),
+    ("provider_limit", r"provider usage or rate limit reached|http 429",
+     "The Overwatcher’s model provider reached a usage or rate limit."),
+    ("provider_timeout", r"provider request timed out|stopped responding while waiting for its model provider",
+     "The Overwatcher’s model provider took too long to respond."),
+    ("provider_connection", r"could not connect to the provider|provider stream (?:ended|was interrupted)",
+     "The Overwatcher’s connection to its model provider ended before the reply was ready."),
+    ("provider_unavailable", r"http 5\d{2}|provider request failed",
+     "The Overwatcher’s model provider couldn’t finish the reply. Check the provider connection in Settings."),
+    ("empty_reply", r"model finished without a visible answer",
+     "The Overwatcher finished without a reply."),
+    ("busy", r"previous reply is still running or stopping|engine is busy with another turn",
+     "The Overwatcher is still finishing a previous request."),
+    ("engine_unavailable", r"engine session failed|engine process terminated|engine turn timed out",
+     "The Overwatcher’s chat engine couldn’t finish the request."),
+)
+
+
+def _chat_failure(request_id, message):
+    # Chat may include free-form task or engine errors. Only fixed messages
+    # and a random request reference belong in the voice response and logs.
+    detail = str(message or "")[:2000]
+    code, public = next(
+        ((code, public) for code, pattern, public in _CHAT_FAILURES if re.search(pattern, detail, re.I)),
+        ("chat_failed", "The Overwatcher couldn’t finish this voice request."),
+    )
+    reference = request_id[:10]
+    logger.warning("Voice Chat failed: code=%s reference=%s", code, reference)
+    return {"message": public, "voice_error": code, "reference": reference}
 
 
 def owner(request):
@@ -286,6 +328,14 @@ async def chat(request: Request):
     chat_api._active_streams[request_id] = entry
     async def stream():
         complete = False
+
+        def present_error(message):
+            nonlocal complete
+            # A terminal failure also settles the stream if the client closes
+            # as soon as it sees the error, before the loop can finish reading.
+            complete = True
+            return _chat_failure(request_id, message)
+
         async def observed():
             nonlocal complete
             if command in voice_approval.APPROVE:
@@ -332,7 +382,7 @@ async def chat(request: Request):
             # Close every suspended generator before deciding whether execution
             # is finished. Detached booking producers keep their existing guard.
             async with (aclosing(source), aclosing(observed()) as frames,
-                        aclosing(_drive_stream(frames, request_id, cid)) as driven,
+                        aclosing(_drive_stream(frames, request_id, cid, present_error=present_error)) as driven,
                         aclosing(_with_chat_keepalive(driven)) as kept):
                 async for frame in kept:
                     yield frame

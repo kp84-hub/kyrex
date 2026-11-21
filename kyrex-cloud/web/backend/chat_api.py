@@ -115,7 +115,7 @@ def _require_user(request: Request) -> str:
     return main.require_user(request)
 
 
-async def _drive_stream(gen, request_id: str, conversation_id: str):
+async def _drive_stream(gen, request_id: str, conversation_id: str, *, present_error=None):
     """Drive ``stream_chat`` to completion, emitting ordered SSE frames.
 
     ``stream_chat`` yields control dicts: ``{type: conversation|delta}`` for
@@ -123,6 +123,10 @@ async def _drive_stream(gen, request_id: str, conversation_id: str):
     cancelled, ...}`` terminal frame (an async generator cannot ``return`` a
     value). This maps them onto the stable public SSE events.
     """
+    def error_frame(message, **fields):
+        public = present_error(message) if present_error else {"message": message}
+        return _sse_frame({"type": "error", **public, **fields})
+
     try:
         async for frame in gen:
             t = frame.get("type")
@@ -196,17 +200,16 @@ async def _drive_stream(gen, request_id: str, conversation_id: str):
                     yield _sse_frame({"type": "cancelled",
                                       "content": frame.get("content", "")})
                 else:
-                    yield _sse_frame({"type": "error",
-                                      "message": frame.get("message", "provider error"),
+                    yield error_frame(frame.get("message", "provider error"),
                                       **developer,
                                       **({"task_id": frame["task_id"], "task_status": "failed"}
                                          if frame.get("task_id") and frame.get("task_status") == "failed"
-                                         else {})})
+                                         else {}))
                 return
     except chat_service.ChatUnavailable as exc:
-        yield _sse_frame({"type": "error", "message": str(exc)})
+        yield error_frame(str(exc))
     except Exception:
-        yield _sse_frame({"type": "error", "message": "Chat request failed. Try again."})
+        yield error_frame("Chat request failed. Try again.")
 
 
 @router.post("/api/chat")

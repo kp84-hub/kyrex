@@ -10,8 +10,8 @@ const until = async condition => {
 };
 
 function fixture({ reply = longReply, failAt = 0, holdAudio = false, holdNextAudio = false, holdDecode = false, holdPlayback = false, oversizedAudio = false, followUpSeconds = 0, chatStream } = {}) {
-  const calls = [], parts = [], played = [], phases = [], errors = [], progress = [];
-  let audioResolve, audioReject, decodeResolve, player;
+  const calls = [], parts = [], played = [], phases = [], errors = [], progress = [], results = [];
+  let audioResolve, audioReject, decodeResolve, player, lastError;
   const json = value => ({ ok: true, json: async () => value });
   const context = {
     destination: {},
@@ -28,7 +28,12 @@ function fixture({ reply = longReply, failAt = 0, holdAudio = false, holdNextAud
     },
   };
   const client = new VoiceClient({ clientId: 'a'.repeat(32),
-    onState: state => { phases.push(state.phase); if (state.error) errors.push(state.error); if (state.progress) progress.push(state.progress); },
+    onResult: cid => results.push(cid),
+    onState: state => {
+      phases.push(state.phase);
+      if (state.error) { errors.push(state.error); lastError = state; }
+      if (state.progress) progress.push(state.progress);
+    },
     microphone: async () => ({ tone() {}, stop() {}, context }),
     fetcher: async (url, options) => {
       calls.push(url);
@@ -60,7 +65,7 @@ function fixture({ reply = longReply, failAt = 0, holdAudio = false, holdNextAud
     client.samples(new Float32Array(3200).fill(.1));
     return client.finishCapture();
   }
-  return { client, calls, parts, played, phases, errors, progress, run,
+  return { client, calls, parts, played, phases, errors, progress, results, run, get errorState() { return lastError; },
     releaseAudio: () => audioResolve(), releaseDecode: () => decodeResolve(),
     rejectAudio: () => audioReject(new Error('The stopped lookahead was aborted')),
     finishPlayback: () => player.onended(),
@@ -117,6 +122,28 @@ test('voice reads the final result without waiting for the connection to close',
     cancel() { cancelled = true; },
   });
   assert.equal(await voiceReply({ body }), 'Tomorrow is clear.');
+  assert.equal(cancelled, true);
+});
+
+test('a Chat error refreshes the original voice conversation without replaying the command', async () => {
+  const message = 'The Overwatcher’s model provider reached a usage or rate limit.';
+  const reference = '1a2b3c4d5e';
+  let cancelled = false;
+  const f = fixture({ chatStream: new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('data: ' + JSON.stringify({
+        type: 'error', voice_error: 'provider_limit', message, reference,
+      }) + '\n\n'));
+    },
+    cancel() { cancelled = true; },
+  }) });
+  await f.run();
+  assert.deepEqual(f.errors, [message]);
+  assert.equal(f.errorState.errorConversation, 'voice-fixture');
+  assert.equal(f.errorState.errorReference, reference);
+  assert.deepEqual(f.results, ['voice-fixture']);
+  assert.deepEqual(f.parts, []);
+  assert.equal(f.calls.filter(url => url.endsWith('/chat')).length, 1);
   assert.equal(cancelled, true);
 });
 

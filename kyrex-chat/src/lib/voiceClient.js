@@ -23,7 +23,15 @@ export async function voiceReply(response, onApproval = () => {}, onProgress = (
           void reader.cancel().catch(() => {});
           return spokenText(event.content);
         }
-        if (event.type === 'error') throw new Error('The request may be saved in voice chat. Open it before repeating the command.');
+        if (event.type === 'error') {
+          void reader.cancel().catch(() => {});
+          const reference = typeof event.reference === 'string' && /^[a-f0-9]{10}$/.test(event.reference)
+            ? event.reference : '';
+          const message = reference && typeof event.voice_error === 'string' && typeof event.message === 'string'
+            ? event.message.slice(0, 240)
+            : 'The request may be saved in voice chat. Open it before repeating the command.';
+          throw Object.assign(new Error(message), { reference });
+        }
         if (event.type === 'cancelled') throw new Error('The voice request was interrupted. Check its status in voice chat.');
         if (event.type === 'approval_request') reply = 'This needs your approval. Open your voice chat in Kyrex to review it.';
         if (event.type === 'progress' && typeof event.payload?.stage === 'string' && event.payload.stage.trim()) {
@@ -284,8 +292,10 @@ export class VoiceClient {
           if (active() && this.phase === 'working') this.state('working', { progress });
         });
       }
-      finally { if (this.turnRequestId === requestId) this.chatRunning = false; }
-      this.onResult(this.cid);
+      finally {
+        if (this.turnRequestId === requestId) this.chatRunning = false;
+        if (active()) this.onResult(this.cid);
+      }
       if (!active()) return;
       if (this.settings.engine === 'openai') {
         const parts = speechChunks(reply);
@@ -331,14 +341,22 @@ export class VoiceClient {
       if (!active()) return;
       this.player = null; this.playbackDone = null;
       this.afterReply(approval);
-    } catch (error) { if (active()) await this.fail(error); }
+    } catch (error) { if (active()) await this.fail(error, requestId ? this.cid : null); }
     finally {
       if (requestId && this.turnRequestId === requestId) {
         this.turnRequestId = null; this.chatResponse = null; this.chatRunning = false;
       }
     }
   }
-  async fail(error) { const message = error?.name === 'NotAllowedError' ? 'Allow microphone access in your browser, then try again.' : error.message; await this.stop(); this.state('stopped', { error: message }); }
+  async fail(error, conversationId = null) {
+    const message = error?.name === 'NotAllowedError'
+      ? 'Allow microphone access in your browser, then try again.' : error.message;
+    const stopping = this.stop(), generation = this.generation;
+    await stopping;
+    if (generation === this.generation) {
+      this.state('stopped', { error: message, errorConversation: conversationId, errorReference: error.reference });
+    }
+  }
   async stop() {
     this.screenLock.setActive(false);
     ++this.generation; ++this.turnGeneration; clearTimeout(this.followTimer); this.recording = null;
@@ -349,7 +367,8 @@ export class VoiceClient {
     this.worker?.terminate(); this.worker = null; this.pending = new Float32Array();
     this.stopPlayback();
     this.mic?.stop(); this.mic = null;
-    const lease = this.lease; this.lease = ''; this.state('stopped', { level: 0 });
+    const lease = this.lease; this.lease = '';
+    this.state('stopped', { level: 0, error: null, errorConversation: null, errorReference: null });
     if (lease) {
       try { await this.fetcher('/api/voice/stop', { method: 'POST', headers: { 'X-Voice-Client': this.clientId, 'X-Voice-Lease': lease }, keepalive: true, signal: AbortSignal.timeout(5000) }); } catch {}
     }
