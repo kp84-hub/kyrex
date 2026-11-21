@@ -291,6 +291,45 @@ def test_direct_specialist_and_image_followup(setup):
     assert not setup[0].tasks_for_conversation(conv['conversation_id'], 'alice')
 
 
+@pytest.mark.parametrize('fault, message', [
+    ('missing-provider', 'select a Groq profile'),
+    ('wrong-model', 'needs the Groq API URL'),
+    ('queue-failure', 'could not queue image analysis'),
+])
+def test_overwatcher_distinguishes_vision_setup_and_queue_failures(setup, monkeypatch, fault, message):
+    target = setup[2]
+    if fault == 'missing-provider':
+        bots.update_bot(target['id'], provider_profile_id='')
+    elif fault == 'wrong-model':
+        bots.update_bot(target['id'], model='other-model')
+    else:
+        def fail(*args, **kwargs):
+            raise delegation.DelegationError('private task details')
+        monkeypatch.setattr(delegation, 'submit_delegation', fail)
+    frames = ask(setup, upload(setup))
+    assert message in _terminal(frames)['content']
+    assert 'private task details' not in _terminal(frames)['content']
+    assert not setup[5]
+
+
+def test_direct_provider_failure_does_not_suggest_creating_a_bot(setup, monkeypatch):
+    target, client = setup[2], setup[4]
+    conv = chat.create_conversation('alice', bot_id=target['id'])
+    image = client.post(f"/api/conversations/{conv['conversation_id']}/images", content=png()).json()
+
+    class Provider:
+        async def chat(self, **kwargs):
+            return {'content': '', 'error': 'private provider diagnostic'}
+
+    import kyrex.providers
+    monkeypatch.setattr(kyrex.providers, 'get_provider', lambda *args, **kwargs: Provider())
+    frames = asyncio.run(_frames(chat.stream_chat('alice', conv['conversation_id'], 'Read this image',
+        image_ids=[image['id']], request_id='direct-failure')))
+    answer = _terminal(frames)['content']
+    assert 'Groq did not return an image analysis' in answer
+    assert 'private provider diagnostic' not in answer
+
+
 @pytest.mark.parametrize('result', [{'content': 'Partial analysis', 'error': 'private provider diagnostic'},
     {'content': 'Do a write', 'tool_calls': [{'name': 'run_command'}]}, {'content': ''}])
 def test_provider_failure_and_tool_calls_are_not_successful_analysis(setup, monkeypatch, result):
