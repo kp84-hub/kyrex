@@ -73,6 +73,7 @@ export async function consumeStream(stream, handlers = {}) {
         break;
       } else if (t === 'error') {
         terminal = { kind: 'error', message: event.message || 'Stream error',
+          ...(event.check_status ? { checkStatus: true } : {}),
           ...(event.developer_result ? { developer_result: true, events: event.events || [] } : {}),
           ...(event.developer_verification ? { developer_verification: event.developer_verification } : {}),
           ...(event.task_id && event.task_status === 'failed'
@@ -108,7 +109,10 @@ export async function consumeStream(stream, handlers = {}) {
       // Local transport abort (browser-side cancel fallback): keep partial.
       terminal = { kind: 'aborted', content: sanitizeAssistantText(full) };
     } else {
-      terminal = { kind: 'error', message: readableError(err) };
+      terminal = { kind: 'error', message: readableError(err),
+        ...(err?.resumeTurn ? { resumeTurn: true } : {}),
+        ...(err?.checkStatus ? { checkStatus: true } : {}),
+        ...(err?.status === 401 ? { needsAuth: true } : {}) };
     }
   }
 

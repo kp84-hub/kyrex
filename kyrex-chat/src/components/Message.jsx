@@ -273,7 +273,8 @@ export default function Message({ message, conversationId, onRetry, isLastAssist
         </div>}
         {(message.error || message.connection_interrupted || message.task_recovery) && isLastAssistant && !message.streaming && onRetry && (
           <button type="button" className="retry-btn" onClick={onRetry}>
-            {message.connection_interrupted || message.task_recovery ? 'Check status' : 'Retry'}
+            {message.connection_interrupted || message.task_recovery || message.check_status
+              ? 'Check status' : message.resume_turn ? 'Reconnect' : 'Retry'}
           </button>
         )}
         {message.streaming && !message.content && !message.developer_result && (

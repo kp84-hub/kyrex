@@ -6547,14 +6547,16 @@ async def stream_chat(
         # Historical delegation/status frames are not an answer to this turn.
         # Preserve accepted tasks, but never report a blank successful reply or
         # tell the owner to blindly retry a possibly accepted external action.
-        if outcome is _SENTINEL and not final_text and not workout_report and not sleep_report and not email_draft_id:
+        empty_reply = outcome is _SENTINEL and not (final_text or workout_report or sleep_report or email_draft_id)
+        if empty_reply:
             outcome = _ERROR
             result = ("The model finished without a visible answer. Check this "
                       "conversation and its tasks before retrying an action.")
 
         if outcome is _ERROR:
             yield {"type": "status", "status": "error",
-                   "message": result or "provider error"}
+                   "message": result or "provider error",
+                   **({"check_status": True} if empty_reply else {})}
         elif outcome is _CANCELLED:
             yield {"type": "status", "status": "cancelled", "content": final_text}
         else:

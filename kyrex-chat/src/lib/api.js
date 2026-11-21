@@ -548,70 +548,110 @@ export async function uploadChatImage(conversationId, file) {
   return data;
 }
 
-export function streamChat(conversationId, message, requestId, workspaceId, imageIds, deviceLocation) {
-  const controller = new AbortController();
+export function streamChat(conversationId, message, requestId, workspaceId, imageIds, deviceLocation, resume = false) {
   const reqId = requestId || newRequestId();
-
-  const payload = {
-    conversation_id: conversationId || '',
-    message,
-    request_id: reqId,
-  };
+  const payload = { conversation_id: conversationId || '', message, request_id: reqId, resumable: true };
   if (imageIds?.length) payload.image_ids = imageIds;
   if (deviceLocation) payload.device_location = deviceLocation;
-  if (workspaceId !== undefined && workspaceId !== null && workspaceId !== '') {
-    payload.workspace_id = workspaceId;
+  if (workspaceId) payload.workspace_id = workspaceId;
+
+  let viewer, cancelled = false, reconnect = false, supported = resume ? true : null, cursor = 0;
+  async function* read(resuming) {
+    const resp = await fetch(resuming
+      ? BASE + '/chat/resume/' + encodeURIComponent(conversationId) + '/' + encodeURIComponent(reqId) + '?after=' + cursor
+      : BASE + '/chat', {
+      ...(resuming ? { cache: 'no-store' } : {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+      }),
+      signal: viewer.signal,
+    });
+    if (!resp.ok) {
+      let detail = resp.statusText;
+      try { detail = (await resp.json()).detail || detail; } catch {}
+      const error = new Error(detail || 'Chat request failed.');
+      error.status = resp.status;
+      throw error;
+    }
+    supported = resp.headers?.get('X-Kyrex-Resumable') === '1';
+    const reader = resp.body.getReader(), decoder = new TextDecoder();
+    let buffer = '';
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) return;
+        buffer += decoder.decode(value, { stream: true });
+        let end;
+        while ((end = buffer.indexOf('\n\n')) !== -1) {
+          const frame = buffer.slice(0, end);
+          buffer = buffer.slice(end + 2);
+          const data = frame.split('\n').find(line => line.startsWith('data:'));
+          if (!data) continue;
+          const number = /^id: (\d+)$/m.exec(frame);
+          if (number) {
+            const position = Number(number[1]);
+            if (position <= cursor) continue;
+            cursor = position;
+          }
+          const event = JSON.parse(data.slice(5));
+          // An accepted turn may already have delegated work before it
+          // reports an error. Inspect that work before starting a new turn.
+          if (supported && event.type === 'error') event.check_status = true;
+          yield event;
+        }
+      }
+    } finally {
+      void reader.cancel().catch(() => {});
+      reader.releaseLock();
+    }
   }
 
   async function* stream() {
-    const resp = await fetch(`${BASE}/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    });
-
-    if (!resp.ok) {
-      let detail = resp.statusText;
-      try {
-        const body = await resp.json();
-        if (body && body.detail) detail = body.detail;
-      } catch {
-        /* not json */
+    let hidden = document.visibilityState === 'hidden';
+    const foreground = event => {
+      if (document.visibilityState === 'hidden') { hidden = true; return; }
+      if (conversationId && supported !== false && (hidden || event.type === 'online' || event.persisted)) {
+        reconnect = true;
+        viewer?.abort();
       }
-      const err = new Error(detail || `Request failed (${resp.status})`);
-      err.status = resp.status; // 401 → the UI offers the same-origin sign-in link
-      throw err;
-    }
-
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      // SSE frames are separated by a blank line.
-      let idx;
-      while ((idx = buffer.indexOf('\n\n')) !== -1) {
-        const frame = buffer.slice(0, idx);
-        buffer = buffer.slice(idx + 2);
-        if (!frame.trim()) continue;
-        for (const line of frame.split('\n')) {
-          if (line.startsWith('data:')) {
-            const payload = line.slice(5).trim();
-            if (payload) yield JSON.parse(payload);
+      hidden = false;
+    };
+    document.addEventListener('visibilitychange', foreground);
+    window.addEventListener('online', foreground);
+    window.addEventListener('pageshow', foreground);
+    let resuming = resume;
+    try {
+      while (!cancelled) {
+        viewer = new AbortController();
+        try {
+          for await (const event of read(resuming)) {
+            yield event;
+            if (['done', 'error', 'cancelled'].includes(event.type)) return;
           }
+          if (!supported) return;
+          throw new Error('The live reply disconnected.');
+        } catch (error) {
+          if (cancelled) throw error;
+          if (reconnect || (!resuming && !error.status && conversationId && (supported || error instanceof TypeError))) {
+            reconnect = false;
+            resuming = true;
+            continue;
+          }
+          if (resuming && error.status === 404) error.checkStatus = true;
+          else if (resuming) error.resumeTurn = true;
+          throw error;
         }
       }
+    } finally {
+      document.removeEventListener('visibilitychange', foreground);
+      window.removeEventListener('online', foreground);
+      window.removeEventListener('pageshow', foreground);
     }
   }
 
-  // Return the started iterator (not the generator function): consumers do
-  // `for await (const event of stream)` on it exactly once.
-  return { stream: stream(), cancel: () => controller.abort(), requestId: reqId };
+  return {
+    stream: stream(), requestId: reqId,
+    cancel: () => { cancelled = true; viewer?.abort(); },
+  };
 }
 
 

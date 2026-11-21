@@ -30,7 +30,7 @@ import {
 import { consumeStream } from '../lib/streaming';
 import { createTextStreamSmoother } from '../lib/smoothStreaming';
 import { sanitizeAssistantText, sanitizeConversation } from '../lib/sanitize';
-import { needsTaskRecovery, reconcileTranscript } from '../lib/transcript';
+import { matchesSavedTurn, needsTaskRecovery, needsTurnRecovery, reconcileTranscript } from '../lib/transcript';
 import { locationForMessage } from '../lib/location';
 
 const ACTIVE_KEY = 'kyrex-chat.activeConversationId';
@@ -348,7 +348,8 @@ export function useChat() {
         return incoming ? reconcileTranscript(updated, incoming) : updated;
       });
       if (incoming?.some(m => (m.workout_booking || m.workout_pending)
-          && messagesRef.current.some(old => old.id === m.id && (old.connection_interrupted || old.workout_pending)))) {
+          && messagesRef.current.some(old => old.id === m.id && (old.connection_interrupted || old.workout_pending)))
+          || incoming?.some(m => messagesRef.current.some(old => needsTurnRecovery(old) && matchesSavedTurn(old, m)))) {
         setError(null);
       }
     } catch {
@@ -536,7 +537,7 @@ export function useChat() {
   }, [activeId, activeBotId]);
 
   const send = useCallback(
-    async (text, files = [], imageRefs = [], explicitLocation = null, expectedConversationId = null) => {
+    async (text, files = [], imageRefs = [], explicitLocation = null, expectedConversationId = null, resumeId = null) => {
       if (expectedConversationId && expectedConversationId !== activeIdRef.current) return false;
       const trimmed = (text || '').trim() || (files.length ? 'Describe this image and read any relevant visible text.' : '');
       if (!trimmed || isGenerating) return;
@@ -551,7 +552,7 @@ export function useChat() {
         return;
       }
       transcriptRevisionRef.current += 1;
-      const turnRequestId = newRequestId();
+      const turnRequestId = resumeId || newRequestId();
 
       // Optimistically append the user message.
       const userMsg = {
@@ -598,7 +599,7 @@ export function useChat() {
           return false;
         }
       }
-      setMessages((prev) => [...prev, userMsg]);
+      if (!resumeId) setMessages((prev) => [...prev, userMsg]);
       setError(null);
       setIsGenerating(true);
 
@@ -614,7 +615,9 @@ export function useChat() {
         events: [],
         approval: null,
       };
-      setMessages((prev) => [...prev, assistantMsg]);
+      setMessages((prev) => resumeId
+        ? prev.map(m => m.id === assistantMsg.id ? assistantMsg : m)
+        : [...prev, assistantMsg]);
 
       const updateAssistant = (patch) =>
         setMessages((prev) =>
@@ -661,14 +664,16 @@ export function useChat() {
       const locationAbort = new AbortController();
       streamRef.current = { cancel: () => locationAbort.abort(), requestId: turnRequestId,
         assistantId: assistantMsg.id, cancelSmoother: () => smoother.cancel() };
-      const deviceLocation = await locationForMessage(trimmed, explicitLocation, { signal: locationAbort.signal });
+      const deviceLocation = resumeId ? undefined
+        : await locationForMessage(trimmed, explicitLocation, { signal: locationAbort.signal });
       if (locationAbort.signal.aborted || activeIdRef.current !== targetId) {
         updateAssistant({ streaming: false, cancelled: true });
         if (activeIdRef.current === targetId) { streamRef.current = null; setIsGenerating(false); }
         return false;
       }
       const { stream, cancel, requestId } = streamChat(
-        targetId, trimmed, turnRequestId, wsForTurn || undefined, userMsg.images?.map(image => image.id), deviceLocation);
+        targetId, trimmed, turnRequestId, wsForTurn || undefined,
+        userMsg.images?.map(image => image.id), deviceLocation, Boolean(resumeId));
       streamRef.current = {
         cancel, requestId, assistantId: assistantMsg.id,
         cancelSmoother: () => smoother.cancel(),
@@ -832,8 +837,11 @@ export function useChat() {
               content: full,
               streaming: false,
               error: terminal.message || 'Stream error',
+              ...(terminal.resumeTurn ? { resume_turn: requestId } : {}),
+              ...(terminal.checkStatus ? { check_status: true } : {}),
             });
             setError(terminal.message || 'Stream error');
+            if (terminal.needsAuth) setNeedsAuth(true);
           }
         }
       } catch (err) {
@@ -922,10 +930,15 @@ export function useChat() {
     const lastAssistant = [...messages].reverse().find(
       (m) => m.role === 'assistant'
     );
-    if (needsTaskRecovery(lastAssistant)) {
+    if (needsTaskRecovery(lastAssistant) || lastAssistant?.check_status) {
       return refreshMessages(activeId);
     }
     if (!lastUser || !lastAssistant || !lastAssistant.error) return;
+    if (lastAssistant.resume_turn) {
+      return lastAssistant.turn_user_id === lastUser.id
+        ? send(lastUser.content, [], lastUser.images || [], null, activeId, lastAssistant.resume_turn)
+        : refreshMessages(activeId);
+    }
     setMessages((prev) => prev.filter((m) => m.id !== lastAssistant.id));
     send(lastUser.content, [], lastUser.images || []).catch(() => {});
   }, [messages, isGenerating, send, refreshMessages, activeId]);

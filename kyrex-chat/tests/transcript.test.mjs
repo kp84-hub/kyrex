@@ -19,4 +19,9 @@ assert.equal(reconcileTranscript([user, connectorReply], connectorStored).length
 const otherTurn = [user, { id: 'turn-r2-user', role: 'user', content: 'Run task again' }, { id: 'turn-r2-assistant', role: 'assistant', content: 'Finished' }];
 assert.deepEqual(reconcileTranscript([user, connectorReply], otherTurn), [user, connectorReply], 'an identical reply in another turn cannot acknowledge this result');
 assert.equal(reconcileTranscript([user, { ...reply, error: 'Interrupted', content: '' }], [user]).length, 1, 'unsaved failed placeholders do not block durable updates');
+const disconnected = { ...connectorReply, content: '', error: 'Disconnected', resume_turn: 'r1' };
+assert.deepEqual(reconcileTranscript([user, disconnected], [user]), [user, disconnected]);
+const savedDeveloperReply = { id: user.id + '-developer-work', role: 'assistant', content: 'Developer Bot is queued.' };
+assert.deepEqual(reconcileTranscript([user, disconnected], [user, savedDeveloperReply]),
+  [user, { ...savedDeveloperReply, id: reply.id, persisted_id: savedDeveloperReply.id }]);
 console.log('stale transcript, task identity, connector identity and repeated refresh checks: passed');

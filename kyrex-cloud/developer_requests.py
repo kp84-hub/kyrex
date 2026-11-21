@@ -3,7 +3,7 @@ import re
 
 
 _PR = r"(?:pr|pull\s+request)"
-_BOT = r"(?:dev(?:eloper)?\s+bot)"
+_BOT = r"(?:dev(?:eloper)?\s*bot)"
 _REQUEST = r"(?:(?:can|could|would)\s+you\s+)?(?:please\s+)?"
 _DELEGATE = r"(?:have|ask|get|tell)\s+(?:the\s+)?" + _BOT + r"\s+(?:to\s+)?"
 _OPEN_PR = (r"\b(?:open|create|prepare|publish|submit|raise)\s+"
@@ -85,6 +85,8 @@ def _explicit_action(text):
                 or _REPO_DESTINATION.search(subject)
                 or (verb == 'run' and re.fullmatch(r'(?:the |all )?(?:tests|full suite)[.?!]?', subject, re.I))
                 or (verb == 'add' and _UI_CHANGE.search(target) and _UI_DESTINATION.search(subject))
+                or (work['delegated'] and verb in {'add', 'change', 'update', 'remove'}
+                    and re.search(r'\bsettings\b', target, re.I))
                 or (verb in {'build', 'change', 'update', 'remove'} and _UI_CHANGE.search(target))):
             return "work"
     return None
