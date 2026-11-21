@@ -154,6 +154,20 @@ def test_altered_queued_job_never_runs_executor(store, corruption):
     assert task["result"] is None
 
 
+def test_retired_crypto_jobs_reject_submission_and_never_run(store):
+    message = "Crypto paper trading has been retired."
+    with pytest.raises(JobContractError, match=message):
+        queue(store, "{}", prefix="crypto_paper")
+
+    task_id = queue(store, "{}", prefix="repo")
+    with store._conn:
+        store._conn.execute(
+            "UPDATE tasks SET executor_prefix='crypto_paper' WHERE task_id=?", (task_id,))
+    task = execute(store, lambda **kw: pytest.fail("Retired crypto job executed"))
+    assert task["status"] == "failed"
+    assert task["error"] == message
+
+
 def test_read_job_cannot_enter_approval_flow(store):
     task_id = queue(store)
     def executor(**kw):

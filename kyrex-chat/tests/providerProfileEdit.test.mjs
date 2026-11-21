@@ -33,6 +33,10 @@ let changed = 0;
 await act(async () => root.render(React.createElement(ProviderSettings, {
   onSaved: () => changed++, installState: { installed: false, help: '', busy: false, install: () => {} },
 })));
+const headings = [...div.querySelectorAll('h2, h3')].map(heading => heading.textContent);
+assert.ok(headings.includes('Budget Bot'));
+assert.doesNotMatch(div.textContent, /crypto bot|paper trading/i);
+assert.ok(calls.every(call => !call.url.startsWith('/api/automations/crypto-paper')));
 const form = () => div.querySelector('.provider-form');
 const row = name => [...div.querySelectorAll('.provider-row')].find(el => el.querySelector('strong')?.textContent === name);
 const edit = async name => act(async () => [...row(name).querySelectorAll('button')].find(b => b.textContent === 'Edit').click());

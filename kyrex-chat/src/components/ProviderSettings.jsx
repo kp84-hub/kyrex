@@ -4,7 +4,6 @@ import EmailAutomationSettings from './EmailAutomationSettings.jsx';
 import TrainerMonitorSettings from './TrainerMonitorSettings.jsx';
 import EventReviewSettings from './EventReviewSettings.jsx';
 import BudgetSettings from './BudgetSettings.jsx';
-import CryptoPaperSettings from './CryptoPaperSettings.jsx';
 import { GmailCleanupSettings } from './GmailCleanup.jsx';
 import PrivacySettings from './PrivacySettings.jsx';
 import FamilySettings from './FamilySettings.jsx';
@@ -114,7 +113,6 @@ export default function ProviderSettings({ onClose, onSaved, installState, onOpe
       <EmailAutomationSettings />
       <EventReviewSettings onOpenConversation={onOpenConversation} />
       <BudgetSettings profiles={profiles} onOpenConversation={onOpenConversation} onSaved={onSaved} />
-      <CryptoPaperSettings profiles={profiles} onOpenConversation={onOpenConversation} onSaved={onSaved} />
       <GmailCleanupSettings />
       <TrainerMonitorSettings />
       <form ref={formRef} className="provider-form" onSubmit={save}>
