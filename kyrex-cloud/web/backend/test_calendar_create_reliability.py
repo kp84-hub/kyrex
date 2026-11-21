@@ -112,6 +112,141 @@ def test_exact_metadata_is_reviewed_before_provider_write(monkeypatch, decision,
         assert 'Description: a vitamin injection' in receipt
 
 
+@pytest.mark.parametrize('text', [
+    'Remind me to water the plants every day at 10:30 AM Eastern',
+    'Set up a daily reminder to water the plants at 10.30 a.m. Eastern Standard Time.',
+    'Add a reminder to water the plants at 10:30am every day',
+])
+def test_daily_reminder_is_one_local_series(text):
+    intent = cal_writer.parse_create_request(text, now=NOW.replace(hour=21))
+    assert intent['start'] == '2026-10-27T10:30:00'
+    assert intent['end'] == '2026-10-27T10:31:00'
+    assert intent['title'] == 'water the plants'
+    event = cal_writer.to_google_event(intent)
+    assert event['start']['timeZone'] == event['end']['timeZone'] == 'America/New_York'
+    assert event['recurrence'] == ['RRULE:FREQ=DAILY']
+    assert event['reminders'] == {'useDefault': False, 'overrides': [{'method': 'popup', 'minutes': 0}]}
+    assert event['transparency'] == 'transparent'
+    assert cal_writer.parse_create_request(text, now=NOW)['start'] == '2026-10-26T10:30:00'
+
+
+@pytest.mark.parametrize('extra', ['for 7 days', 'until Friday', 'Pacific Time', 'and invite Bob'])
+def test_daily_reminder_cannot_drop_an_unhandled_constraint(extra):
+    with pytest.raises(cal_writer.CalendarWriterError):
+        cal_writer.parse_create_request(f'Set a daily reminder to check the garden at 10:30 AM {extra}', now=NOW)
+
+
+@pytest.mark.parametrize('decision,changed,count', [('DENIED', False, 0), ('APPROVED', False, 1), ('APPROVED', True, 0)])
+def test_daily_reminder_reviews_series_and_binds_destination(monkeypatch, decision, changed, count):
+    intent = cal_writer.parse_create_request('Remind me to check the garden daily at 3 PM', now=NOW)
+    calls = []
+    live_status = {'connected_at': 10, 'calendar_id': 'garden-calendar', 'scopes': [connectors.GOOGLE_CALENDAR_WRITE_SCOPE]}
+    def transport(method, url, token, params, event):
+        calls.append((method, url, event))
+        return {'id': 'synthetic-series'}
+    store = SimpleNamespace(
+        status=lambda owner, *args: dict(live_status),
+        route_capability=lambda *args: {'bot_role': 'calendar_writer'},
+        access_token=lambda *args: 'offline',
+        preferred_calendar=lambda owner, *args: live_status['calendar_id'],
+        calendar_write_available=lambda owner: True)
+    store.calendar_writer = lambda owner: connectors.CalendarWrite(store, owner, transport=transport)
+    monkeypatch.setattr(connectors, 'default_store', lambda: store)
+    monkeypatch.setenv('KYREX_BOT_OWNER', 'alice')
+    monkeypatch.setattr('sys.argv', ['executor', '--task', json.dumps(intent)])
+    verdicts = iter(['ALLOW', decision])
+    def read_decision():
+        answer = next(verdicts)
+        if changed and answer == 'APPROVED':
+            live_status['calendar_id'] = 'changed-calendar'
+        return answer
+    monkeypatch.setattr(calendar_writer_executor, '_read_decision', read_decision)
+    output = io.StringIO()
+    monkeypatch.setattr('sys.stdout', output)
+    calendar_writer_executor.main()
+    frames = dict(line.split(':', 1) for line in output.getvalue().splitlines())
+    preview = json.loads(frames['KYREX_APPROVAL'])
+    assert preview['op'] == 'cal.create'
+    assert 'every day at 3:00 PM Eastern' in preview['summary']
+    assert 'calendar: garden-calendar' in preview['detail']
+    assert 'ends: never' in preview['detail'] and 'notification: at the start' in preview['detail']
+    assert len(calls) == count
+    result = json.loads(frames['KYREX_RESULT_JSON'])
+    if count:
+        assert calls[0][0] == 'POST'
+        assert calls[0][1].endswith('/garden-calendar/events')
+        assert calls[0][2] == cal_writer.to_google_event(intent)
+        assert 'every day at 3:00 PM Eastern' in result['final_response']
+    else:
+        assert result['status'] == 'error'
+        assert ('destination changed' if changed else 'not approved') in result['errors'][0]
+
+
+def test_calendar_worker_accepts_review_under_the_calendar_create_grant(monkeypatch, tmp_path):
+    import textwrap
+
+    script = tmp_path / 'calendar_review.py'
+    script.write_text(textwrap.dedent('''
+        import json
+        import sys
+
+        print('KYREX_APPROVAL:' + json.dumps({
+            'op': 'cal.create', 'tier': 1, 'summary': 'create daily reminder',
+        }), flush=True)
+        decision = sys.stdin.readline().strip()
+        print('KYREX_RESULT_JSON:' + json.dumps({
+            'status': 'ok', 'final_response': decision,
+        }), flush=True)
+    '''))
+    monkeypatch.setitem(serve.EXECUTORS, 'cal_write', script)
+    monkeypatch.setattr(serve, 'build_context', lambda *a, **k: serve.ExecutionContext(
+        session_id='chief', rift_path=str(tmp_path), policy={'cal:create': 0},
+        bot_id='chief', bot_owner='alice'))
+    monkeypatch.setattr(serve, 'APPROVAL_TIMEOUT', 1)
+    approval_tiers, results = [], []
+    def approve(approval_id, tier, *_):
+        approval_tiers.append(tier)
+        serve.handle_approval_reply('alice', 'y', approval_id, session_key='chief')
+    serve.run_task('alice', None, 'fixture', 'cal_write', session_key='chief',
+                   send=lambda *args: 1, edit=lambda *args: None,
+                   on_approval=approve, on_result=results.append)
+    assert approval_tiers == [1]
+    assert results[0]['final_response'] == 'APPROVED'
+
+
+def test_overwatcher_daily_reminder_followup_and_retry_use_one_task(monkeypatch, tmp_path):
+    bot = {'id': 'chief', 'owner': 'alice', 'status': 'running', 'policy': serve.COORDINATOR_PRESET}
+    monkeypatch.setattr(bots, 'load_bots', lambda: {'chief': bot})
+    monkeypatch.setattr(chat_service, '_chat_root', lambda: tmp_path / 'chat')
+    monkeypatch.setattr(chat_service, '_get_engine_session', lambda *a, **k: pytest.fail('Reached model'))
+    store = CloudTaskStore(db_path=tmp_path / 'tasks.db')
+    monkeypatch.setattr(chat_service, '_task_store', lambda: store)
+    conv = chat_service.create_conversation('alice')
+    conv['bot_id'] = 'chief'
+    chat_service._write('alice', conv)
+    viewed = []
+    async def observe(user, conv, store, task_id, cancel, **kwargs):
+        viewed.append(task_id)
+        yield {'type': 'status', 'status': 'complete', 'content': 'Prepared.'}
+    monkeypatch.setattr(chat_service, '_stream_existing_bot_task', observe)
+    async def turn(text, request_id):
+        return [frame async for frame in chat_service.stream_chat(
+            'alice', conv['conversation_id'], text, request_id=request_id)]
+    first = asyncio.run(turn('Can you set up a daily reminder?', '1' * 32))
+    assert first[-1]['content'] == cal_writer.DAILY_REMINDER_QUESTION
+    assert store.list_tasks() == []
+    text = 'water the plants at 10.30 a.m. Eastern Standard Time.'
+    asyncio.run(turn(text, '2' * 32))
+    asyncio.run(turn(text, '2' * 32))
+    tasks = store.list_tasks()
+    assert len(tasks) == 1
+    assert viewed == [tasks[0]['task_id']] * 2
+    assert tasks[0]['executor_prefix'] == 'cal_write'
+    intent = json.loads(tasks[0]['task_text'])
+    assert intent['daily_reminder'] is True
+    assert intent['title'] == 'water the plants' and intent['start'].endswith('T10:30:00')
+
+
 def test_write_route_cannot_be_replaced_with_read_or_lossy_payload():
     request = REQUESTS[0]
     intent = cal_writer.parse_create_request(request)

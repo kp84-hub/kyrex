@@ -2989,6 +2989,8 @@ def _run_email_calendar_task(ctx, chat_id, task_text, task_id, send,
     import cal_writer  # local: the ONE create-intent validator
     try:
         intent = cal_writer.intent_from_task(task_text)
+        if intent.get("daily_reminder"):
+            raise cal_writer.CalendarWriterError("Daily reminders require the Calendar Writer.")
     except cal_writer.CalendarWriterError:
         _email_calendar_fail_closed(
             ctx, f"unsupported calendar create request {task_text!r}",
@@ -5671,6 +5673,10 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                     bot_policy = ctx.policy
                     first_word = summary.split()[0].lower() if summary.strip() else ""
                     operation = f"{executor_prefix}:{first_word}"
+                    if executor_prefix == "cal_write" and approval.get("op") == "cal.create":
+                        # The Calendar writer's task-local grant is cal:create.
+                        # Use it for this review as well as the operation frame.
+                        operation = "cal:create"
                     policy_info = None
                     try:
                         pol_decision = policy.evaluate(bot_policy, operation, derived_tier)

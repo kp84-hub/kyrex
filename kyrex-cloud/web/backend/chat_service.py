@@ -4691,6 +4691,14 @@ async def stream_chat(
         if not conv.get('bot_id') or not is_read_request(user_content):
             raise ChatUnavailable("Fitness delegation only serves a bound Bot's read request.")
     selected_bot = bots.load_bots().get(conv.get('bot_id')) if conv.get('bot_id') else None
+    import daily_reminder_chat
+    if (selected_bot and not fitness_read_only and not image_ids
+            and daily_reminder_chat.requested(user_content, conv, request_id)):
+        async for frame in daily_reminder_chat.stream(
+                sys.modules[__name__], user, conv, selected_bot, user_content,
+                request_id, cancel_event, workspace_id):
+            yield frame
+        return
     import rift_sandbox
     if not fitness_read_only and not image_ids and rift_sandbox.requested(user_content):
         if not selected_bot or selected_bot.get('owner') != user:

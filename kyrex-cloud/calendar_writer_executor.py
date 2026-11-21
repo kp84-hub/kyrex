@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """calendar_writer_executor.py — the Calendar WRITER executor.
 
-Creates ONE event on the OWNER's PRIMARY calendar (America/New_York), through
-the owner's own event-write authorization, and NOTHING else. Distinct from the
-read-only Calendar Reader (cal_executor.py).
+Creates one event or one daily reminder series on the owner's selected
+calendar (America/New_York), through the owner's event-write authorization.
 
 Flow (each step fails closed):
 
@@ -87,18 +86,31 @@ def main() -> int:
     _emit("KYREX_OPERATION", {
         "op": "cal.create",
         "target": intent["title"],
-        "summary": f"create \u201c{intent['title']}\u201d on the owner's primary calendar",
+        "summary": cal_writer.summary_line(intent),
     })
     verdict = _read_decision()
     if verdict not in ("ALLOW", "APPROVE"):
         return _fail("calendar create denied by host policy")
 
+    binding = None
+    if intent.get("daily_reminder"):
+        try:
+            import connectors
+            store = connectors.default_store()
+            status = store.status(owner)
+            if not status.get("connected_at") or not store.calendar_write_available(owner):
+                return _fail("Connect Google Calendar write access to set a daily reminder.")
+            binding = {"calendar": status["calendar_id"], "connected_at": status["connected_at"]}
+        except Exception:
+            return _fail("Could not verify the destination calendar for this reminder.")
+
     # 4. Mandatory confirmation gate — the EXACT payload, then explicit owner
     #    approval, BEFORE any external call.
     _emit("KYREX_APPROVAL", {
+        "op": "cal.create",
         "tier": 1,
         "summary": cal_writer.summary_line(intent),
-        "detail": cal_writer.payload_display(intent),
+        "detail": cal_writer.payload_display(intent, **({"calendar": binding["calendar"]} if binding else {})),
     })
     decision = _read_decision()
     if decision != "APPROVED":
@@ -109,7 +121,7 @@ def main() -> int:
         import connectors
         store = connectors.default_store()
         created = store.calendar_writer(owner).create_event(
-            cal_writer.to_google_event(intent))
+            cal_writer.to_google_event(intent), **({"expected_binding": binding} if binding else {}))
     except Exception as exc:  # noqa: BLE001 — every failure fails closed
         return _fail(f"calendar create failed: {str(exc) or type(exc).__name__}")
 
