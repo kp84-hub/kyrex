@@ -79,6 +79,13 @@ _ROW_RE = re.compile(
 )
 
 _ROW_SEPARATORS = " -–—:|."
+STUDIO_CLOSED = "No classes - studio closed"
+
+
+def is_studio_closed(workout: str) -> bool:
+    """Only an explicit whole-day closure can replace a scheduled workout."""
+    return bool(re.fullmatch(r"(?:no classes(?:\s*[-–—:]\s*studio closed)?|studio closed)",
+                             " ".join(workout.split()), re.IGNORECASE))
 
 
 def clean_workout_name(value):
@@ -509,7 +516,7 @@ def join_week(six: WeeklySix, glofox_rows, *, allow_unverified_trainers=False) -
             raise Level6Error(f"ambiguous Glofox rows for {key}")
         by_date[key] = row
 
-    post_dates = {entry.iso for entry in six.days}
+    post_dates = {entry.iso for entry in six.days if not is_studio_closed(entry.workout)}
     glofox_dates = set(by_date)
 
     if post_dates != glofox_dates:
@@ -529,6 +536,9 @@ def join_week(six: WeeklySix, glofox_rows, *, allow_unverified_trainers=False) -
 
     lines: list[str] = []
     for entry in six.days:
+        if is_studio_closed(entry.workout):
+            lines.append(f"{entry.weekday} {entry.iso} — {STUDIO_CLOSED}")
+            continue
         row = by_date[entry.iso]
         trainer = str(row.get("trainer_name") or "").strip()
         if not trainer and not allow_unverified_trainers:
@@ -647,6 +657,11 @@ def _read_weekly_sources(*, dispatch, glofox_read, today, allow_unverified_train
     assert_plausible_week(six, today=today)
     published_workouts = {entry.iso: entry.workout for entry in six.days}
     preview_options = {"report_title_conflicts": True} if report_title_conflicts else {}
+    closed_dates = tuple(entry.iso for entry in six.days if is_studio_closed(entry.workout))
+    if closed_dates:
+        if len(closed_dates) == len(six.days):
+            raise Level6Error("the weekly post has no workout classes")
+        preview_options["closed_dates"] = closed_dates
     rows = glofox_read(
         list(published_workouts), published_workouts=published_workouts,
         allow_unverified_trainers=allow_unverified_trainers,

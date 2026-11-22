@@ -164,6 +164,11 @@ _RECOVERY_ARROW_RE = re.compile(
 _WRAPPED_TITLE_RE = re.compile(r"[A-Z]{3,}(?:[ &+'/-]+[A-Z]+)*")
 _WEEKDAY_ONLY_RE = re.compile(_WEEKDAY_LABEL, re.IGNORECASE)
 _WORKOUT_TRAILING_NOISE = " \t-–—:|.<>»«=~_©®™•·‘’“”'\""
+_WORKOUT_TIME_RE = re.compile(r"\b\d{1,2}:?[0-5]\d\s*[ap]?\.?m\.?\s+", re.IGNORECASE)
+_TIMED_WRAP_RE = re.compile(
+    rf"(?<![A-Za-z])(?P<weekday>(?i:{_WEEKDAY_LABEL}|fr))\s*[>»]+\s*"
+    r"(?:[a-z0-9:]{2,7}\s+)?[\"“”']+(?P<tail>[A-Z][A-Z &+'/-]+)$"
+)
 
 
 class Level6OcrError(Exception):
@@ -412,12 +417,39 @@ def _printed_week(*layouts: str) -> date:
 def _workout_title(raw: str) -> str:
     workout = raw.strip(_WORKOUT_TRAILING_NOISE)
     workout = re.sub(r"^[^A-Za-z0-9&%]+", "", workout)
+    clock = _WORKOUT_TIME_RE.match(workout)
+    if clock:
+        workout = workout[clock.end():]
     if not workout or not workout[0].isalpha():
         return ""
     # Tesseract can read the decorative row icon as an isolated trailing token.
     workout = re.sub(r"\s+(?:[\"“”']?\d{1,3}|&|[©®™]+)\s*$", "", workout)
     workout = re.sub(r"\s+", " ", workout).strip()
     return re.sub(r"[^\w&+%)]*$", "", workout).strip()
+
+
+def _has_clipped_timed_title(raw: str) -> bool:
+    return bool(_WORKOUT_TIME_RE.match(raw.strip(_WORKOUT_TRAILING_NOISE))
+                and re.search(r"\.{2,}\W*$", raw))
+
+
+def _timed_title_continuations(layouts: tuple[str, ...]) -> dict[tuple[str, str], set[str]]:
+    """Match a clipped timed title to a weekday-labeled wrap in the same image."""
+    continuations = {}
+    for layout in layouts:
+        lines = [line.strip() for line in layout.splitlines() if line.strip()]
+        for before, line in zip(lines, lines[1:]):
+            match = _TIMED_WRAP_RE.search(line)
+            clock = _WORKOUT_TIME_RE.search(before)
+            if not match or not clock:
+                continue
+            label = match['weekday'].lower()
+            day = {'th': 'Thursday', 'fr': 'Friday'}.get(label) or _weekday_name(label)
+            title = _workout_title(before[clock.end():])
+            tail = _workout_title(match['tail'])
+            if day and title and tail:
+                continuations.setdefault((day, title.casefold()), set()).add(tail)
+    return continuations
 
 
 def _title_with_continuation(workout: str, lines: list[str], index: int) -> str:
@@ -431,9 +463,10 @@ def _title_with_continuation(workout: str, lines: list[str], index: int) -> str:
     return workout
 
 
-def _ordered_workouts(block_text: str) -> list[str]:
+def _ordered_workouts(block_text: str, *, layouts: tuple[str, ...] = ()) -> list[str]:
     """Extract the six right-column workout names from the fixed graphic."""
     workouts = []
+    clipped = []
     lines = str(block_text or "").splitlines()
     for index, raw in enumerate(lines):
         # The stylized heading can itself contain chevrons and the WEEK OF
@@ -444,13 +477,33 @@ def _ordered_workouts(block_text: str) -> list[str]:
         match = _ARROW_ROW_RE.search(raw)
         if not match:
             continue
-        workout = _workout_title(match.group("workout"))
+        raw_workout = match.group("workout")
+        workout = _workout_title(raw_workout)
         if not workout:
             continue
+        if not workouts and index and re.search(r"\bMON(?:DAY)?\b", raw[:match.start()], re.I):
+            # A centered Monday label can land on the second line of the
+            # first workout. An adjacent uppercase prefix ending in '&' is
+            # part of that title, rather than a standalone description.
+            prefix = lines[index - 1].strip(_WORKOUT_TRAILING_NOISE)
+            if prefix.endswith('&') and _WRAPPED_TITLE_RE.fullmatch(prefix[:-1].rstrip()):
+                workout = f"{prefix} {workout}"
+        if _has_clipped_timed_title(raw_workout):
+            clipped.append(len(workouts))
         workouts.append(_title_with_continuation(workout, lines, index))
-    if len(workouts) != len(WEEKDAYS):
+    if len(workouts) == len(WEEKDAYS) and clipped:
+        continuations = _timed_title_continuations(layouts)
+        unresolved = []
+        for offset in clipped:
+            tails = continuations.get((WEEKDAYS[offset], workouts[offset].casefold()), set())
+            if len(tails) == 1:
+                workouts[offset] = f"{workouts[offset]} {next(iter(tails))}"
+            else:
+                unresolved.append(offset)
+        clipped = unresolved
+    if len(workouts) != len(WEEKDAYS) or clipped:
         raise Level6OcrError(
-            f"workout_rows_{min(len(workouts), 99)}",
+            f"workout_rows_{min(len(workouts) - len(clipped), 99)}",
             "the weekly image does not contain exactly six workout rows",
         )
     return workouts
@@ -464,7 +517,8 @@ def _labeled_workouts(layout: str) -> list[str]:
         if match:
             label = match.group('weekday').lower()
             weekday = 'Thursday' if label == 'th' else _weekday_name(label)
-            rows.append((weekday, _workout_title(match.group('workout'))))
+            raw = match['workout']
+            rows.append((weekday, '' if _has_clipped_timed_title(raw) else _workout_title(raw)))
     if tuple(day for day, _ in rows) != WEEKDAYS or not all(title for _, title in rows):
         return []
     return [title for _, title in rows]
@@ -495,7 +549,10 @@ def _recover_labeled_workouts(monday: date, layouts: tuple[str, ...]) -> list[st
                 # cannot help fill any gap by position or via a duplicate label.
                 rows = {}
                 break
-            title = _title_with_continuation(_workout_title(match['workout']), lines, index)
+            raw = match['workout']
+            if _has_clipped_timed_title(raw):
+                continue
+            title = _title_with_continuation(_workout_title(raw), lines, index)
             if title:
                 rows[day] = title
         tables.append(rows)
@@ -528,7 +585,7 @@ def canonicalize_weekly_ocr(block_text: str, sparse_text: str, alternate_text: s
     if native_text and _printed_week(*layouts) != monday:
         raise Level6OcrError("week_label_ambiguous", "the OCR passes disagree on the printed week")
     try:
-        workouts = _ordered_workouts(block_text)
+        workouts = _ordered_workouts(block_text, layouts=layouts)
     except Level6OcrError as exc:
         if not re.fullmatch(r"workout_rows_[0-5]", exc.code):
             raise
@@ -537,7 +594,7 @@ def canonicalize_weekly_ocr(block_text: str, sparse_text: str, alternate_text: s
             # The alternate layout can preserve all six chevrons even when
             # the outlined weekday labels are partially unreadable.
             try:
-                workouts = _ordered_workouts(alternate_text)
+                workouts = _ordered_workouts(alternate_text, layouts=layouts)
             except Level6OcrError:
                 workouts = _labeled_workouts(alternate_text)
             else:

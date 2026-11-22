@@ -316,6 +316,75 @@ check("the actual stylised-heading OCR normalizes to the strict contract",
       canonical == EXPECTED_CANONICAL, f"{canonical!r}")
 check("the canonical output passes the existing strict analyzer",
       l6.analyze_ocr_text(canonical) == ("valid", ""))
+
+holiday_block = """THE WEEKLY» f 3€ Pky
+’ FULL BODY STRENGTH & ...
+23 MON >> CONDITIONING —
+TUE >» CARDIO IS HARDIO ©
+* 1. WED'>> PUSH/PULL UPPER PYRAMIDS
+TMU >>” NO CLASSES - STUDIO CLOSED @
+"BR >> 830m BLACK FRIDAY FULL BODY ..
+73 VAL >> METABOLIC MELTDOWN @
+LEVELGTRAINING.COM® oo & oy owe [EVElS
+"""
+holiday_sparse = """(EER OF
+THE WEEKLY» ff 3€
+11.23.26
+FULL BODY STRENGTH & -..
+MON >>
+CONDITIONING ~
+QUE »
+CARDIO IS HARDIO
+WELD) >>
+PUSH/PULL UPPER PYRAMIDS
+HAPPY 4
+THU »
+NO CLASSES - STUDIO CLOSED @
+BLACK FRIDAY FULL BODY .»  *
+BRI » 8:30AM
+H
+GAY >
+METABOLIC MELTDOWN 4
+LEVEL6TRAINING.COM
+"""
+holiday_alternate = """THE WEEKLYSS I XX er
+11 FULL BODY STRENGTH & ..
+2 MON>> CONDITIONING
+TUE >» CARDIO IS HARDIO ©
+! WED >>... PUSH/PULL UPPER PYRAMIDS
+TMU >>” NO CLASSES - STUDIO CLOSED @
+73 VAL >> METABOLIC MELTDOWN 4
+LEVELGTRANG.COMA a ie
+"""
+holiday_native = """THE WEEKLYS> § < io
+i FULL BODY STRENGTH & -.
+2 IMON>> CONDITIONING”
+» LUE > CARDIO IS HARDIO ©
+i  1QED)>>... PUSH/PULL UPPER PYRAMIDS ~
+1 TEU >» as NO CLASSES - STUDIO CLOSED @
+1 eon ys 830am BLACK FRIDAY FULL BODY .» «©
+FR >> sso “STRENGTH
+%e SAAT >> METABOLIC MELTDOWN 4
+LEVEL6TRAINING.COM at | y [EVES
+"""
+holiday_expected = "\n".join([
+    "THE WEEKLY SIX", "WEEK OF 11.23.26",
+    "Monday 11.23 FULL BODY STRENGTH & CONDITIONING",
+    "Tuesday 11.24 CARDIO IS HARDIO",
+    "Wednesday 11.25 PUSH/PULL UPPER PYRAMIDS",
+    "Thursday 11.26 NO CLASSES - STUDIO CLOSED",
+    "Friday 11.27 BLACK FRIDAY FULL BODY STRENGTH",
+    "Saturday 11.28 METABOLIC MELTDOWN",
+])
+expect_code("the holiday layout still needs evidence for the clipped title",
+            l6.canonicalize_weekly_ocr, "workout_rows_5",
+            holiday_block, holiday_sparse, holiday_alternate)
+check("the Thanksgiving trace keeps the closure and reconstructs both wrapped titles",
+      l6.canonicalize_weekly_ocr(holiday_block, holiday_sparse, holiday_alternate,
+                                holiday_native) == holiday_expected)
+expect_code("a timed title with a different continuation weekday is refused",
+            l6.canonicalize_weekly_ocr, "workout_rows_5", holiday_block, holiday_sparse,
+            holiday_alternate, holiday_native.replace("FR >> sso", "SAT >> sso"))
 far_separated_sparse = "WEEK OF\n" + ("unrelated OCR noise " * 20) + "\n09.14.26"
 fallback_canonical = l6.canonicalize_weekly_ocr(
     OBSERVED_BLOCK_OCR.replace("WEEK OF", ""), far_separated_sparse)

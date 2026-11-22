@@ -4224,8 +4224,11 @@ def _run_level6_facebook_message_task(ctx, chat_id, task_text, send,
                             "No message was prepared or sent.")
             plain = ["#L6Workout", "", "🏋️ Level 6 — Workout Week"]
             for line in lines:
-                summary, trainer = line.rsplit(" — trainer: ", 1)
-                plain.extend([summary, f"Trainer: {trainer}"])
+                summary, _, trainer = line.rpartition(" — trainer: ")
+                if trainer and summary:
+                    plain.extend([summary, f"Trainer: {trainer}"])
+                else:
+                    plain.append(line)
             outgoing = "\n".join(plain)
         if title_conflicts:
             message = ("#L6Workout preview\n\n"
@@ -4369,7 +4372,8 @@ def _run_level6_calendar_batch_task(
 
         pending = missing()
         if not pending:
-            reply("All six Level 6 workouts are already on your calendar.")
+            count = "six" if len(intents) == 6 else str(len(intents))
+            reply(f"All {count} Level 6 workouts are already on your calendar.")
             return
         if not still_running():
             raise batch.CalendarBatchError("calendar task was cancelled")
