@@ -218,7 +218,7 @@ handoff has been repaired and tested.
 Temporarily set `KYREX_LEVEL6_OCR_DEBUG=1` in `browser-host/enrollment.env`,
 then rebuild/recreate the agent with the Cloud compose command above. Run
 `#L6Workout preview` once. Every OCR failure, including a missing heading,
-saves the actual candidate image and both OCR layouts inside the container;
+saves the actual candidate image and all attempted OCR layouts inside the container;
 nothing is uploaded or sent. The bounded six-candidate scan retains
 `candidate-01.png`/`.txt` through `candidate-06.png`/`.txt` for failed candidates.
 `latest.png` and `latest.txt` also contain the most recent failure.
