@@ -1265,6 +1265,7 @@ OPERATION_TIERS: dict[str, int] = {
     "cal:update": 1,
     "repo:pr": 1,
     "fs:delete": 2,
+    "repo:remove_tracked": 2,
     "mail:send": 2,
     "repo:push": 2,
     # Coordination: delegating work to another Bot. This is a HOST operation,
@@ -1424,6 +1425,26 @@ def is_writable_bot_policy(bot_policy) -> bool:
         if isinstance(effective, int) and effective >= 1:
             return True
     return False
+
+
+def developer_removal_review_allowed(ctx) -> bool:
+    """Permit a one-time owner review in the live, writable Bot checkout."""
+    if not ctx.rift_path or not ctx.bot_owner:
+        return False
+    try:
+        live = bots.get_bot(ctx.bot_id)
+    except KeyError:
+        return False
+    grants = live.get('policy')
+    if (live.get('owner') != ctx.bot_owner
+            or str(live.get('rift')) != str(ctx.rift_path) or not bots.is_running(live)
+            or not is_writable_bot_policy(grants)):
+        return False
+    for operation in ('fs:delete', 'repo:remove_tracked'):
+        decision = policy.evaluate(grants, operation, 2)
+        if decision.get('matched_rule') is not None and decision['effective_tier'] == 'deny':
+            return False
+    return True
 
 
 def scope_escalates(target: str) -> bool:
@@ -4819,7 +4840,8 @@ def format_result(result: dict) -> str:
                 continue
         return "\n".join(sources + [str(result.get("final_response") or "")[:12000]]).strip() or "No readable page text returned."
     if result.get("mode") == "developer" and result.get("status") in ("completed", "no_changes"):
-        return str(result.get("final_response") or "").strip()[:12000]
+        return '\n\n'.join(str(result[key]).strip() for key in ('workspace_notice', 'final_response')
+                           if result.get(key))[:12000]
     status = result.get("status", "unknown")
     final_response = result.get("final_response", "").strip()
 
@@ -5356,10 +5378,13 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
             proc_env.pop('KYREX_GITHUB_HOST_BRIDGE', None)
             proc_env.pop('KYREX_CONNECTED_REPOSITORY', None)
             proc_env.pop('KYREX_WORKSPACE_FRESHNESS', None)
+            proc_env.pop('KYREX_DEVELOPER_DELETE_BRIDGE', None)
             if executor_prefix == 'developer' and bound_bot:
                 proc_env['KYREX_GITHUB_HOST_BRIDGE'] = '1'
                 proc_env.pop('GITHUB_TOKEN', None)
                 proc_env.pop('GH_TOKEN', None)
+                if developer_removal_review_allowed(ctx):
+                    proc_env['KYREX_DEVELOPER_DELETE_BRIDGE'] = '1'
                 if connected_repository:
                     proc_env['KYREX_CONNECTED_REPOSITORY'] = connected_repository['repository']
                     proc_env['KYREX_WORKSPACE_FRESHNESS'] = json.dumps(connected_repository['freshness'])
@@ -5666,6 +5691,17 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                     summary = approval.get("summary", "")
                     token = approval.get("token", "")
                     detail = approval.get("detail", "")
+                    tracked_removal = approval.get('op') == 'repo.remove_tracked'
+                    if tracked_removal and (executor_prefix != 'developer'
+                            or (proc_env or {}).get('KYREX_DEVELOPER_DELETE_BRIDGE') != '1'
+                            or not developer_removal_review_allowed(ctx)):
+                        try:
+                            proc.stdin.write('DENIED\n')
+                            proc.stdin.flush()
+                        except BrokenPipeError:
+                            pass
+                        continue
+                    approval_timeout = min(APPROVAL_TIMEOUT, 90) if tracked_removal else APPROVAL_TIMEOUT
 
                     # Policy evaluation — never blocks the approval.
                     # The context carries the Bot's policy when bound, or
@@ -5707,7 +5743,9 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                     # never approve.  For unbound sessions revert to the
                     # host-derived tier so the pending approval stays
                     # operator-resolvable; bound sessions are untouched.
-                    if ctx.rift_path is None and not isinstance(tier, int):
+                    if tracked_removal:
+                        effective_tier = 2
+                    elif ctx.rift_path is None and not isinstance(tier, int):
                         effective_tier = derived_tier
                     else:
                         effective_tier = tier
@@ -5729,7 +5767,8 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                             f"⚠️  T2: {summary}"
                             + (f"\n{detail}" if detail else "")
                             + f"\n\nReply exactly:  {token}"
-                            f"\n(timeout: {APPROVAL_TIMEOUT // 60} min)"
+                            + (f'\n(timeout: {approval_timeout}s)' if tracked_removal
+                               else f'\n(timeout: {approval_timeout // 60} min)')
                         )
                     else:
                         prompt = (
@@ -5774,12 +5813,14 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
                     # approval so human think-time doesn't consume the task
                     # budget.
                     watchdog.cancel()
-                    got_reply = evt.wait(timeout=APPROVAL_TIMEOUT)
+                    got_reply = evt.wait(timeout=approval_timeout)
                     if not timed_out.is_set():
                         watchdog = threading.Timer(TASK_TIMEOUT, on_timeout)
                         watchdog.start()
                     entry = pending_approvals.pop((_skey, approval_msg_id), None)
                     decision = "APPROVED" if got_reply and entry and entry["result"] == "APPROVED" else "DENIED"
+                    if tracked_removal and decision == 'APPROVED' and not developer_removal_review_allowed(ctx):
+                        decision = 'DENIED'
 
                     # Record every approval decision to the audit log.
                     # A failure to write must never block the decision from

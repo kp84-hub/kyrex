@@ -99,6 +99,27 @@ class RiftFreshnessTests(unittest.TestCase):
         self.assertEqual(git_workflow.workspace_fingerprint(self.rift), before)
         self.assertTrue((self.rift / "local").exists())
 
+    def test_owner_can_start_from_latest_without_losing_the_old_branch(self):
+        self.commit(self.rift, "local", "old calendar change")
+        old_branch = git(self.rift, "branch", "--show-current")
+        old_head = git(self.rift, "rev-parse", "HEAD")
+        self.commit(self.src, "remote", "current base")
+        self.args.read_only = False
+        self.args.task = 'Start from latest main'
+        (self.rift / 'notes').write_text('keep')
+        refused = git_workflow.run_workspace_agent(self.args, None, lambda _: None)
+        self.assertIn('uncommitted files', refused['errors'][0])
+        self.assertEqual(git(self.rift, 'rev-parse', 'HEAD'), old_head)
+        (self.rift / 'notes').unlink()
+
+        result = git_workflow.run_workspace_agent(self.args, None, lambda _: None)
+        self.assertEqual(result['status'], 'no_changes')
+        self.assertIn('The previous branch is still available', result['final_response'])
+        self.assertEqual(git(self.rift, 'rev-parse', old_branch), old_head)
+        self.assertEqual(git(self.rift, 'rev-parse', 'HEAD'), git(self.src, 'rev-parse', 'HEAD'))
+        self.assertTrue((self.rift / 'remote').exists())
+        self.assertFalse((self.rift / 'local').exists())
+
     def test_agent_refresh_preserves_untracked_collision(self):
         (self.rift / "new").write_text("local notes")
         before = git_workflow.workspace_fingerprint(self.rift)

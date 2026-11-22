@@ -25,6 +25,12 @@ def _repo_is_read_only() -> bool:
     return os.environ.get("KYREX_READ_ONLY_REPO", "") not in ("", "0")
 
 
+def tracked_removal_available():
+    return (os.environ.get('KYREX_DEVELOPER_TRACKED_REMOVAL') == '1'
+            and os.environ.get('KYREX_SURFACE') == 'Kyrex Chat'
+            and not _repo_is_read_only())
+
+
 _BWRAP_OK = None  # cache: None=unprobed, True/False=probed result
 
 
@@ -1152,6 +1158,27 @@ class ToolBox:
         
         return {"status": "ok", "directory": str(d.resolve()), "files": result}
 
+    def remove_tracked_files(self, paths):
+        """Ask the Developer host to review and apply a tracked-file removal."""
+        if not tracked_removal_available():
+            return {'error': 'Tracked file removal is unavailable in this workspace.'}
+        if (not isinstance(paths, list) or not 1 <= len(paths) <= 20
+                or any(not isinstance(path, str) or len(path) > 240 for path in paths)):
+            return {'error': 'Provide up to 20 exact repository-relative file paths.'}
+        request_id = uuid.uuid4().hex
+        event = threading.Event()
+        _pending_confirmations[request_id] = event
+        try:
+            print(json.dumps({'type': 'confirm_request', 'id': request_id,
+                              'value': 'remove_tracked_files', 'paths': paths}), flush=True)
+            event.wait(timeout=_DELEGATION_TIMEOUT)
+            return _confirmation_payloads.get(request_id) or {
+                'error': 'No removal result was confirmed. Check the workspace diff before retrying.'}
+        finally:
+            _pending_confirmations.pop(request_id, None)
+            _confirmation_results.pop(request_id, None)
+            _confirmation_payloads.pop(request_id, None)
+
     def run_command(self, command, timeout_seconds=10):
         """Execute shell command."""
         if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 180:
@@ -1180,6 +1207,8 @@ class ToolBox:
                 if self._propose_deletion(command):
                     pass  # Approved, continue to execution below
                 else:
+                    if tracked_removal_available():
+                        return {"error": "Shell deletion is blocked. Use remove_tracked_files for exact tracked paths."}
                     return {"error": f"Deletion cancelled by user: {command}"}
             else:
                 return {
@@ -1374,6 +1403,12 @@ BUILTIN_TOOLS = {
                 "usual_activity":{"type":["string","null"],"enum":["hiit","strength","running","cycling","walking","other",None]},
                 "training_days_per_week":{"type":["integer","null"],"minimum":0,"maximum":7,"description":"Owner-stated usual number of distinct training days per week, not sessions. Ask conversationally if missing; never infer from wearable or calendar records. Null clears it only on an explicit forget request."}}}},
             "required":["action"]},
+    },
+    'remove_tracked_files': {
+        'description': 'Request owner approval to remove existing, unmodified tracked files from the Developer Bot checkout. Pass exact repository-relative paths. Approval only applies to this local change.',
+        'parameters': {'type': 'object', 'properties': {'paths': {
+            'type': 'array', 'items': {'type': 'string'}, 'minItems': 1, 'maxItems': 20}},
+            'required': ['paths'], 'additionalProperties': False},
     },
     "edit_file": {
         "description": "Make a surgical edit to an existing file. Use write_file (not this) for creating new files. Returns AST-gated result.",

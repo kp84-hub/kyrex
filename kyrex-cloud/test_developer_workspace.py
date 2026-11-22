@@ -1,8 +1,13 @@
 """Workspace turns preserve diverged and dirty Git state, with no publishing."""
 import argparse
+import io
+import json
 import os
 import subprocess
+from types import SimpleNamespace
 from unittest.mock import patch
+
+import pytest
 
 import git_workflow
 import delegation
@@ -56,6 +61,8 @@ def test_workspace_question_and_edit_preserve_existing_work(tmp_path, monkeypatc
 
         def __init__(self, bridge, root, **kwargs):
             assert root == tmp_path
+            assert kwargs['read_only'] is True
+            assert kwargs['host_delete'] is None
             assert os.environ['KYREX_CHAT_SYSTEM_PROMPT'].startswith('Original Bot identity')
             assert 'Preserve existing changes' in os.environ['KYREX_CHAT_SYSTEM_PROMPT']
             assert 'Make the final answer stand alone' in os.environ['KYREX_CHAT_SYSTEM_PROMPT']
@@ -73,8 +80,7 @@ def test_workspace_question_and_edit_preserve_existing_work(tmp_path, monkeypatc
 
         def run(self):
             if args.task == 'edit code.py':
-                (tmp_path / 'code.py').write_text('requested change\n')
-                self.final_response = 'Updated code.py.'
+                self.final_response = 'The checkout needs to be refreshed first.'
 
     with patch.object(git_workflow, 'HeadlessAgent', Agent), \
          patch.object(git_workflow, 'prepare_workspace', side_effect=AssertionError('no sync')), \
@@ -82,11 +88,11 @@ def test_workspace_question_and_edit_preserve_existing_work(tmp_path, monkeypatc
          patch.object(git_workflow, 'open_pull_request', side_effect=AssertionError('no PR')):
         result = git_workflow.run_workspace_agent(args, 'bridge', lambda msg: None)
         assert result['status'] == 'no_changes'
-        assert serve.format_result(result) == Agent.final_response
+        assert 'read-only' in serve.format_result(result) and result['final_response'] == Agent.final_response
         args.task = 'edit code.py'
         result = git_workflow.run_workspace_agent(args, 'bridge', lambda msg: None)
-        assert result['status'] == 'completed'
-        assert result['final_response'] == 'Updated code.py.'
+        assert result['status'] == 'no_changes' and not result['has_changes']
+        assert (tmp_path / 'code.py').read_text() == 'original\n'
     assert git(tmp_path, 'rev-parse', 'HEAD') == head
     assert git(tmp_path, 'branch', '--show-current') == branch
     assert git(tmp_path, 'diff', '--cached', '--binary') == index
@@ -199,3 +205,101 @@ def test_headless_marks_its_engine_environment_without_disabling_edit_protocol(t
     assert captured[0]['KYREX_HEADLESS'] == '1'
     assert captured[0]['KYREX_VSCODE'] == '1'
     assert captured[0]['WORKSPACE_ROOT'] == str(tmp_path)
+
+
+@pytest.mark.parametrize('decision', ['APPROVED', 'DENIED', 'CHANGED'])
+def test_tracked_removal_requires_approval_for_exact_unchanged_files(tmp_path, monkeypatch, capsys, decision):
+    git(tmp_path, 'init', '-q')
+    git(tmp_path, 'config', 'user.name', 'Test')
+    git(tmp_path, 'config', 'user.email', 'test@example.invalid')
+    for name in ('obsolete.js', 'old config.js', 'keep.js'):
+        (tmp_path / name).write_text(name + '\n')
+    git(tmp_path, 'add', '.')
+    git(tmp_path, 'commit', '-qm', 'Tracked files')
+    head = git(tmp_path, 'rev-parse', 'HEAD').strip()
+    paths = ['obsolete.js', 'old config.js']
+
+    def answer():
+        assert all((tmp_path / path).exists() for path in paths)
+        if decision == 'CHANGED':
+            (tmp_path / paths[0]).write_text('owner edit\n')
+        return ('APPROVED' if decision == 'CHANGED' else decision) + '\n'
+
+    monkeypatch.setattr(git_workflow.sys, 'stdin', SimpleNamespace(readline=answer))
+    frame = {'id': 'test', 'paths': paths}
+    result = git_workflow.tracked_delete(tmp_path, head, frame)
+    assert capsys.readouterr().out.startswith('KYREX_APPROVAL:')
+    assert result['approved'] is (decision == 'APPROVED')
+    assert all((tmp_path / path).exists() == (decision != 'APPROVED') for path in paths)
+    assert (tmp_path / 'keep.js').exists()
+    assert git(tmp_path, 'rev-parse', 'HEAD').strip() == head
+    if decision == 'APPROVED':
+        assert result['result']['removed'] == paths
+        assert sorted(git(tmp_path, 'diff', '--cached', '--name-status').splitlines()) == [
+            'D\tobsolete.js', 'D\told config.js']
+    else:
+        assert not git(tmp_path, 'diff', '--cached', '--name-status')
+
+
+def test_tracked_removal_rejects_private_paths_and_preserves_local_edits(tmp_path, capsys):
+    git(tmp_path, 'init', '-q')
+    git(tmp_path, 'config', 'user.name', 'Test')
+    git(tmp_path, 'config', 'user.email', 'test@example.invalid')
+    (tmp_path / 'local.js').write_text('original')
+    (tmp_path / 'link').symlink_to('local.js')
+    git(tmp_path, 'add', '.')
+    git(tmp_path, 'commit', '-qm', 'Tracked files')
+    head = git(tmp_path, 'rev-parse', 'HEAD').strip()
+    (tmp_path / 'local.js').write_text('unsaved edit')
+    (tmp_path / 'untracked.js').write_text('owner file')
+    for path in ('../other.js', '.git/config', 'link', 'untracked.js', 'local.js', ':(glob)*'):
+        assert not git_workflow.tracked_delete(tmp_path, head, {'id': 'test', 'paths': [path]})['approved']
+    assert capsys.readouterr().out == ''
+    assert (tmp_path / 'local.js').read_text() == 'unsaved edit'
+
+
+def test_tracked_removal_respects_owner_binding_and_explicit_delete_denies(monkeypatch):
+    ctx = SimpleNamespace(bot_id='dev', bot_owner='alice', rift_path='/work/alice')
+    bot = {'owner': 'alice', 'rift': ctx.rift_path, 'policy': {'fs:write': 1}, 'status': 'running'}
+    monkeypatch.setattr(serve.bots, 'get_bot', lambda bot_id: bot)
+    assert serve.developer_removal_review_allowed(ctx)
+    bot['policy']['fs:delete'] = 'deny'
+    assert not serve.developer_removal_review_allowed(ctx)
+    del bot['policy']['fs:delete']
+    bot['rift'] = '/different'
+    assert not serve.developer_removal_review_allowed(ctx)
+
+
+def test_developer_removal_uses_the_existing_owner_approval_round_trip(tmp_path, monkeypatch):
+    git(tmp_path, 'init', '-q')
+    bot = {'id': 'dev', 'owner': 'alice', 'status': 'running', 'rift': str(tmp_path),
+           'policy': {'fs:read': 0, 'fs:write': 1, 'repo:read': 0, 'repo:pr': 1}}
+    monkeypatch.setattr(serve.bots, 'load_bots', lambda: {'dev': bot})
+    monkeypatch.setattr(serve.audit, 'log', lambda **kwargs: None)
+    approval = {'op': 'repo.remove_tracked', 'summary': 'Remove tracked files from Developer Bot',
+                'detail': 'Revision 123456789abc\n• obsolete.js\n• old config.js'}
+    proc = SimpleNamespace(stdin=io.StringIO(), stderr=[], returncode=0, wait=lambda *a, **k: 0)
+
+    def launch(_, *, env, **kwargs):
+        assert env['KYREX_DEVELOPER_DELETE_BRIDGE'] == '1'
+        proc.stdout = iter(['KYREX_APPROVAL:' + json.dumps(approval),
+                            'KYREX_RESULT_JSON:{"status":"completed","mode":"developer","final_response":"Done"}'])
+        return proc
+
+    def review(message_id, tier, token, summary, detail):
+        assert tier == 2 and token and detail == approval['detail']
+        assert not serve.handle_approval_reply('bob', token, message_id, 'dev')
+        assert serve.handle_approval_reply('alice', token, message_id, 'dev')
+
+    monkeypatch.setattr(serve.subprocess, 'Popen', launch)
+    monkeypatch.setattr(serve, 'APPROVAL_TIMEOUT', 2)
+    lock = serve.session_lock('dev')
+    lock.acquire()
+    try:
+        serve.run_task(chat_id='alice', session_key='dev', repo_url=None,
+                       executor_prefix='developer', task_text='Remove old files',
+                       send=lambda *_: 'review-1', edit=lambda *_: None, on_approval=review)
+    finally:
+        if lock.locked():
+            lock.release()
+    assert proc.stdin.getvalue() == 'APPROVED\n'
