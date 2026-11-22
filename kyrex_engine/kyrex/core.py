@@ -15,7 +15,7 @@ from .tools import MCPManager
 from .mcp_connectors import ConnectorConfigurationError, ConnectorInstallationError, connector_by_id, configure_connector
 from .audit import ReasoningAuditLogger
 from .jev_shadow import JevShadowObserver
-from .toolbox import ToolBox, BUILTIN_TOOLS, _is_interactive
+from .toolbox import ToolBox, BUILTIN_TOOLS, _is_interactive, tracked_removal_available
 from .conversation_policy import CLARIFICATION_POLICY, clarification_payload
 
 
@@ -677,6 +677,8 @@ class PlaneExecute:
                         "type": "string",
                         "description": "The actual user-facing final answer with requested facts, source and uncertainty. Say the result itself, not that you reported or checked it."}},
                     "required": ["summary", "answer"]}}
+            if name == 'remove_tracked_files' and not tracked_removal_available():
+                continue
             schemas.append({"type": "function", "function": {"name": name, **cfg}})
         schemas.extend(ext_registry.to_openai_schemas())
         schemas.extend(self.mcp.get_tool_schemas())

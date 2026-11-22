@@ -77,7 +77,7 @@ def git_diff(repo_dir: Path) -> str:
 
 
 HOST_TOOL_GATES = frozenset({'github_read', 'fitness_read', 'fitness_profile',
-                             'delegation', 'delegation_status'})
+                             'delegation', 'delegation_status', 'remove_tracked_files'})
 
 
 def auto_approve_gate(value: str) -> bool:
@@ -95,7 +95,7 @@ class HeadlessAgent:
     def __init__(self, bridge: Path, repo_dir: Path, python: str = "python3",
                  startup_timeout: int = 60, idle_timeout: int = 300,
                  overall_timeout: int = 1800, on_event=None, read_only: bool = False,
-                 surface: str = "cloud", host_read=None):
+                 surface: str = "cloud", host_read=None, host_delete=None):
         self.bridge = bridge
         self.repo_dir = repo_dir
         self.python = python
@@ -106,6 +106,7 @@ class HeadlessAgent:
         self.read_only = read_only
         self.surface = surface
         self.host_read = host_read
+        self.host_delete = host_delete if not read_only else None
         self.outcome = None
         self.terminal = False
         self.execution_error = False
@@ -145,9 +146,10 @@ class HeadlessAgent:
                     'approved': auto_approve_gate(value)}
         if value in HOST_TOOL_GATES:
             response['result'] = {'error': 'This host tool is unavailable in the developer runner.'}
-            if value == 'github_read' and self.host_read is not None:
+            handler = {'github_read': self.host_read, 'remove_tracked_files': self.host_delete}.get(value)
+            if handler is not None:
                 try:
-                    reply = self.host_read(msg)
+                    reply = handler(msg)
                     if (not isinstance(reply, dict) or reply.get('id') != msg.get('id')
                             or reply.get('type') != 'confirm_response'
                             or not isinstance(reply.get('approved'), bool)
@@ -155,7 +157,7 @@ class HeadlessAgent:
                         raise ValueError('Missing or invalid host response')
                     response = reply
                 except Exception:
-                    response['result'] = {'error': 'GitHub host read failed to return a valid response.'}
+                    response['result'] = {'error': 'The host tool did not return a valid response.'}
         self._send(response)
         self.approvals.append({'kind': value, 'path': msg.get('path'),
                                'approved': response['approved']})
@@ -170,9 +172,20 @@ class HeadlessAgent:
         env["KYREX_SURFACE"] = self.surface      # gives Kyrex an accurate self-description (see core.py)
         env["WORKSPACE_ROOT"] = str(self.repo_dir)
         env["PROJECT_SOURCE_ROOT"] = str(self.repo_dir)
+        env.pop('KYREX_DEVELOPER_TRACKED_REMOVAL', None)
+        env.pop('KYREX_DEVELOPER_DELETE_BRIDGE', None)
+        if self.host_delete is not None:
+            env['KYREX_DEVELOPER_TRACKED_REMOVAL'] = '1'
         if self.read_only:
             env.pop("GITHUB_TOKEN", None)
             env["KYREX_READ_ONLY_REPO"] = "1"
+            if self.surface == 'Kyrex Chat':
+                readers = ('read_local_file', 'list_local_files', 'github_read', 'run_command', 'task_complete')
+                inherited = env.get('KYREX_ALLOWED_TOOLS', '').strip()
+                if inherited:
+                    allowed = {name.strip() for name in inherited.split(',')}
+                    readers = tuple(name for name in readers if name in allowed)
+                env['KYREX_ALLOWED_TOOLS'] = ','.join(readers) or ','
 
         self.proc = subprocess.Popen(
             [self.python, str(self.bridge)],
@@ -247,7 +260,7 @@ class HeadlessAgent:
                     pass  # a broken callback must never take down the actual run
 
             if t == "propose_edit":
-                self._send({"type": "edit_decision", "editId": msg.get("editId"), "accepted": True})
+                self._send({"type": "edit_decision", "editId": msg.get("editId"), "accepted": not self.read_only})
                 self.approvals.append({"kind": "edit", "path": msg.get("filePath")})
 
             elif t == "confirm_request":

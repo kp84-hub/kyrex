@@ -17,9 +17,16 @@ and does not perform a second anonymous fetch. Original workspaces retain their
 existing local workflow; select the connected repository to use this managed path.
 
 While the Bot is paused and idle, **Refresh checkout** performs the same check.
-The panel shows local commits ahead/behind the last fetched base. If local work
-prevents an update, ask Developer Bot to inspect and synchronize that work;
-Kyrex does not reset, discard, auto-stash or automatically rebase it.
+The panel shows local commits ahead or behind the last fetched base. A stale or
+unverified checkout is read-only. From a clean checkout, tell Developer Bot
+**Start from latest main**, using the repository's actual default branch name.
+This creates a fresh branch and keeps the previous one. Save or review any
+uncommitted files before switching.
+
+When a change calls for removing tracked files, Developer Bot can show an
+approval for the exact paths in Chat. It checks the files again after approval
+and leaves the deletion in the local diff for review. Files with local edits,
+untracked files, symlinks and directories are excluded from this action.
 
 The Repository control follows the owner's Bot's effective `fs:read`,
 `repo:read`, `fs:write`, and `repo:pr` grants, including older coding policies

@@ -54,12 +54,15 @@ is a reason to diagnose and recover, not to hand routine work back to the owner.
 If asked to finish or monitor, follow the existing work through to its outcome
 within the authorized scope. If blocked, explain the evidence and the smallest
 action the owner actually needs to take.
-The workspace may contain earlier work or a branch that differs from main.
-Preserve existing changes. Do not reset or discard files. Switch branches or
-integrate divergent history only for an explicitly requested synchronization,
-after inspecting and preserving the previous branch and all local files.
-The runtime may perform a safe fast-forward. If a requested change would
-conflict with existing work, inspect it and explain the specific conflict.
+The workspace may contain earlier work. Preserve existing changes and do not
+reset, discard files, or switch branches yourself. The runtime fast-forwards
+when safe. If it marks the workspace read-only, inspect it and explain that
+edits need a current checkout. The owner can say "Start from latest BASE"
+using the base branch shown below, to start a fresh branch from a clean checkout.
+If removing obsolete tracked files, use remove_tracked_files when available.
+It asks the owner to approve the exact list. Do not replace files with empty
+stubs or use shell workarounds when deletion was requested or denied. Remove
+references and confirm the deleted paths in the diff before calling work done.
 Commit, push, create a PR, or deploy only when the user's request authorizes
 that action. Before publishing, inspect the current branch and remote state
 and resolve only changes you understand without discarding earlier work.
@@ -261,11 +264,82 @@ def github_host_read(frame):
         return denied
 
 
+def tracked_delete(root, expected_head, frame):
+    """Review regular, unmodified tracked files and remove only the approved paths."""
+    paths = frame.get('paths')
+    response = {'type': 'confirm_response', 'id': frame.get('id'), 'approved': False}
+
+    def fail(message):
+        return {**response, 'result': {'error': message}}
+
+    if (not isinstance(paths, list) or not 1 <= len(paths) <= 20
+            or any(not isinstance(path, str) or not path.isprintable() or len(path) > 240
+                   or '\\' in path or set(path.split('/')) & {'', '.', '..', '.git'} for path in paths)
+            or len(set(paths)) != len(paths) or sum(map(len, paths)) > 1400):
+        return fail('Provide a short list of exact repository-relative paths to tracked files.')
+
+    def snapshot():
+        if run_git(root, 'rev-parse', 'HEAD').stdout.strip() != expected_head:
+            raise ValueError('The repository revision changed. Review the new diff before removing files.')
+        entries = run_git(root, '--literal-pathspecs', 'ls-tree', '-z', 'HEAD', '--', *paths).stdout
+        tracked = {entry.split('\t', 1)[1] for entry in entries.split('\0') if entry
+                   and entry.split(' ', 1)[0] in {'100644', '100755'}}
+        if tracked != set(paths):
+            raise ValueError('Only regular files already tracked by Git can be removed here.')
+        if run_git(root, '--literal-pathspecs', 'status', '--porcelain', '--', *paths).stdout:
+            raise ValueError('One of these files already has local changes. Review those changes before removing it.')
+        digests = []
+        for path in paths:
+            target = root / path
+            if target.resolve() != target or not target.is_file():
+                raise ValueError('Removal requires regular files within this checkout.')
+            with target.open('rb') as source:
+                digests.append(hashlib.file_digest(source, 'sha256').hexdigest())
+        return digests
+
+    try:
+        before = snapshot()
+        approval = {'op': 'repo.remove_tracked', 'summary': 'Remove tracked files from the Developer Bot checkout',
+                    'detail': '\n'.join([f'Revision {expected_head[:12]}', *(f'• {path}' for path in paths)])}
+        print('KYREX_APPROVAL:' + json.dumps(approval), flush=True)
+        if sys.stdin.readline().strip() != 'APPROVED':
+            return fail('File removal was declined or expired. The files were kept.')
+        if before != snapshot():
+            return fail('The files changed after review. Request a new approval.')
+        removed = run_git(root, '--literal-pathspecs', 'rm', '--', *paths, check=False)
+        if removed.returncode:
+            return fail('Git could not finish the removal. Inspect the workspace diff before retrying.')
+    except ValueError as exc:
+        return fail(str(exc))
+    except (OSError, subprocess.CalledProcessError):
+        return fail('Could not verify the tracked files. Inspect the workspace before retrying.')
+    return {**response, 'approved': True, 'result': {'status': 'ok', 'removed': paths}}
+
+
+def start_from_base(root, freshness):
+    """Only the owner's explicit command may leave an existing branch."""
+    base = freshness['base']
+    remote = freshness.get('remote_head')
+    if not remote or freshness['status'] == 'unverified':
+        raise RuntimeError('Could not verify the latest repository base. Existing work was preserved.')
+    if freshness['head'] == remote:
+        return f'This checkout already includes the latest {base}. Existing work is still here.'
+    if run_git(root, 'status', '--porcelain', '--untracked-files=all').stdout:
+        raise RuntimeError('This checkout has uncommitted files. Save or review that work before starting from the latest base.')
+    branch = 'kyrex/work-' + uuid.uuid4().hex[:12]
+    switched = run_git(root, 'switch', '--no-overwrite-ignore', '-c', branch, remote, check=False)
+    if switched.returncode:
+        raise RuntimeError('Could not start a fresh branch safely. Existing work was preserved.')
+    freshness.update(status='updated', head=remote, ahead=0, behind=0, dirty=False)
+    freshness.pop('reason', None)
+    return f'Started {branch} from {base} at {remote[:12]}. The previous branch is still available.'
+
+
 def run_workspace_agent(args, bridge, progress) -> dict:
     """Run one conversational turn in the Bot's existing checkout.
 
     Refresh the remote and fast-forward only when existing work is safe.
-    No implicit branch switch, staging, commit, push, PR, or self-review.
+    No implicit branch switch, commit, push, PR, or self-review.
     Uses the same headless engine and conversation history as coding tasks.
     """
     result = {"task": args.task, "mode": "developer", "errors": [], "verification": [],
@@ -290,18 +364,37 @@ def run_workspace_agent(args, bridge, progress) -> dict:
             freshness = refresh_workspace_agent(root, getattr(args, "base", "main"),
                                                 getattr(args, "token", None))
         result["workspace_freshness"] = freshness
+        base = freshness['base']
+        if re.fullmatch(r'(?:please\s+)?(?:start|work)\s+from\s+(?:the\s+)?latest\s+'
+                        + re.escape(base) + r'[.!]?', args.task.strip(), re.I):
+            result.update(status='no_changes', final_response=start_from_base(root, freshness))
+            result['branch'] = run_git(root, 'rev-parse', '--abbrev-ref', 'HEAD').stdout.strip()
+            result['finished_at'] = datetime.now(timezone.utc).isoformat()
+            return result
+        read_only = freshness['status'] in {'behind', 'diverged', 'unverified'}
+        if read_only:
+            if freshness['status'] == 'unverified':
+                message = f'This checkout is read-only because the latest {base} could not be verified. Check repository access and retry.'
+            else:
+                message = (f'This checkout is read-only because it differs from current {base}. '
+                           f'With a clean checkout, say “Start from latest {base}” to create a fresh branch.')
+            result['workspace_notice'] = message
+            progress({'type': 'progress', 'payload': {'stage': message, 'category': 'developer'}})
         before = workspace_fingerprint(root)
         original_prompt = os.environ.get("KYREX_CHAT_SYSTEM_PROMPT", "")
         os.environ["KYREX_CHAT_SYSTEM_PROMPT"] = (
             original_prompt + "\n\n" + WORKSPACE_AGENT_PROMPT
             + "\nSelected connected repository: " + os.environ.get("KYREX_CONNECTED_REPOSITORY", "original workspace")
-            + "\nRepository freshness: " + json.dumps(freshness)).strip()
+            + "\nRepository freshness: " + json.dumps(freshness)
+            + ("\n" + result['workspace_notice'] if read_only else '')).strip()
         try:
             agent = HeadlessAgent(
                 bridge, root, python=args.python,
                 startup_timeout=args.startup_timeout, idle_timeout=args.idle_timeout,
                 overall_timeout=args.overall_timeout, on_event=developer_progress(progress, result["verification"]),
-                surface="Kyrex Chat", host_read=github_host_read)
+                surface="Kyrex Chat", read_only=read_only, host_read=github_host_read,
+                host_delete=(lambda frame: tracked_delete(root, freshness['head'], frame))
+                if not read_only and os.environ.get('KYREX_DEVELOPER_DELETE_BRIDGE') == '1' else None)
             if agent.start(args.task):
                 progress({"type": "progress", "payload": {"stage": "Working in the developer workspace…", "category": "developer"}})
                 agent.run()
@@ -580,7 +673,7 @@ def refresh_workspace_agent(root: Path, base: str, token: str | None) -> dict:
     else:
         # Git rejects collisions with untracked files before changing HEAD.
         # Unrelated notes (e.g. the smoke test) need not prevent a safe update.
-        updated = run_git(root, "merge", "--ff-only", ref, check=False)
+        updated = run_git(root, "merge", "--ff-only", "--no-overwrite-ignore", ref, check=False)
         if updated.returncode:
             info["status"] = "behind"
             info["reason"] = "Fast-forward refused; existing files preserved. Review before synchronizing."
