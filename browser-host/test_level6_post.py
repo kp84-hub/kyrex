@@ -332,6 +332,20 @@ expect_code("five arrow rows fail closed",
             l6.canonicalize_weekly_ocr, "workout_rows_5",
             "\n".join(OBSERVED_BLOCK_OCR.splitlines()[:-2]),
             OBSERVED_SPARSE_OCR)
+five_rows = "\n".join(OBSERVED_BLOCK_OCR.splitlines()[:7])
+recovery_rows = "FRIDAY 09.18 LOWER BODY TRIPLESETS\n19 SAT CARDIO MAYHEM"
+check("complementary reads recover the sixth row by its printed weekday",
+      l6.canonicalize_weekly_ocr(five_rows, OBSERVED_SPARSE_OCR, recovery_rows)
+      == EXPECTED_CANONICAL)
+for label, unsafe in (
+        ("conflicting title", recovery_rows.replace("LOWER BODY", "UPPER BODY")),
+        ("mismatched date", recovery_rows.replace("19 SAT", "20 SAT")),
+        ("duplicate weekday", recovery_rows + "\nSAT CARDIO MAYHEM"),
+        ("unlabeled title", "FRIDAY 09.18 LOWER BODY TRIPLESETS\nCARDIO MAYHEM"),
+        ("missing overlap", "19 SAT CARDIO MAYHEM")):
+    expect_code(f"a {label} is insufficient to recover the sixth row",
+                l6.canonicalize_weekly_ocr, "workout_rows_5",
+                five_rows, OBSERVED_SPARSE_OCR, unsafe)
 expect_code("two different printed weeks are ambiguous",
             l6.canonicalize_weekly_ocr, "week_label_ambiguous",
             OBSERVED_BLOCK_OCR + " WEEK OF 09.21.26",
@@ -381,14 +395,15 @@ with tempfile.TemporaryDirectory(prefix="l6-diagnostic-") as tmp:
         os.environ["KYREX_LEVEL6_OCR_DEBUG"] = "1"
         l6._save_ocr_diagnostic(
             source, "block", "sparse", "week_label_missing",
-            capture_info={"width": 206, "srcset_candidates": 0})
+            capture_info={"width": 206, "srcset_candidates": 0},
+            alternate="alternate", native="native")
         check("enabled diagnostic retains the actual captured image",
               (l6.OCR_DEBUG_DIR / "latest.png").read_bytes() == b"captured-image")
         evidence = (l6.OCR_DEBUG_DIR / "latest.txt").read_text()
-        check("diagnostic includes both OCR layouts and failure code",
+        check("diagnostic includes OCR layouts and failure code",
               all(value in evidence for value in
                   ("week_label_missing", "width", "206",
-                   "PSM 6\nblock", "PSM 11\nsparse")))
+                   "PSM 6\nblock", "PSM 11\nsparse", "PSM 4\nalternate", "Original PSM 6\nnative")))
         l6._save_ocr_diagnostic(source, "replacement", "", "workout_rows_4")
         check("repeated failures overwrite exactly two private files",
               len(list(l6.OCR_DEBUG_DIR.iterdir())) == 2 and
@@ -486,6 +501,41 @@ with tempfile.TemporaryDirectory(prefix="l6-row-recovery-") as tmp:
         labeled = "\n".join(labeled.splitlines()[:-1])
         expect_code("row recovery still refuses five workouts", l6.run_weekly_ocr,
                     "workout_rows_4", source)
+    finally:
+        l6._run_preprocess, l6.run_ocr = real_preprocess, real_run_ocr
+
+
+with tempfile.TemporaryDirectory(prefix="l6-native-recovery-") as tmp:
+    source = Path(tmp) / "candidate.png"
+    source.write_bytes(b"fake")
+    calls = []
+    real_preprocess, real_run_ocr = l6._run_preprocess, l6.run_ocr
+    native_result = (recovery_rows, False)
+
+    def native_retry(path, **kwargs):
+        psm = kwargs['psm']
+        calls.append((Path(path), psm, kwargs['timeout']))
+        if Path(path) == source:
+            return native_result
+        return (OBSERVED_SPARSE_OCR if psm == '11' else five_rows), False
+
+    l6._run_preprocess = lambda *_args, **_kwargs: None
+    l6.run_ocr = native_retry
+    try:
+        check("one native-image retry can recover a row hidden by preprocessing",
+              l6.run_weekly_ocr(source) == (EXPECTED_CANONICAL, False))
+        check("the additional pass reuses the exact capture and a bounded timeout",
+              [psm for _, psm, _ in calls] == ['6', '11', '4', '6']
+              and calls[-1] == (source, '6', l6.OCR_PASS_TIMEOUT), repr(calls))
+        native_result = ("", True)
+        check("a truncated native pass cannot validate the preview",
+              l6.run_weekly_ocr(source) == ("", True))
+        native_result = ("WEEK OF 09.21.26\n" + recovery_rows, False)
+        expect_code("the native pass cannot change the verified printed week",
+                    l6.run_weekly_ocr, "week_label_ambiguous", source)
+        native_result = ("FRIDAY 09.18 LOWER BODY TRIPLESETS", False)
+        expect_code("the native pass never invents an absent workout",
+                    l6.run_weekly_ocr, "workout_rows_5", source)
     finally:
         l6._run_preprocess, l6.run_ocr = real_preprocess, real_run_ocr
 

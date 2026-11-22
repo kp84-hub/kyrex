@@ -145,12 +145,24 @@ _FULL_PRINTED_DATE_RE = re.compile(
     r"\b(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{2}|\d{4})\b"
 )
 _ARROW_ROW_RE = re.compile(r"[>»]+\s*(?P<workout>[^>»]+)$")
+_WEEKDAY_LABEL = (r"mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|"
+                  r"th(?:u(?:rsday)?)?|fri(?:day)?|sat(?:urday)?")
 _LABELED_ROW_RE = re.compile(
-    r"^\s*(?P<weekday>mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|"
-    r"th(?:u(?:rsday)?)?|fri(?:day)?|sat(?:urday)?)\.?\s+"
+    rf"^\s*(?P<weekday>{_WEEKDAY_LABEL})\.?\s+"
     r"[>»:\-–—|]*\s*(?P<workout>[A-Za-z].*)$", re.IGNORECASE,
 )
+_RECOVERY_ROW_RE = re.compile(
+    r"^\s*(?:(?:(?P<leading_month>\d{1,2})[.\-/])?(?P<leading_day>\d{1,2})\s+)?"
+    rf"(?P<weekday>{_WEEKDAY_LABEL})\.?\s+"
+    r"(?:(?P<month>\d{1,2})[.\-/](?P<day>\d{1,2})\s+)?"
+    r"[>»:\-–—|]*\s*(?P<workout>[A-Za-z].*)$", re.IGNORECASE,
+)
+_RECOVERY_ARROW_RE = re.compile(
+    rf"^(?P<noise>[^>»]{{0,16}}\s)(?P<weekday>{_WEEKDAY_LABEL})\.?\s*[>»]+\s*"
+    r"(?P<workout>[A-Za-z][^>»]*)$", re.IGNORECASE,
+)
 _WRAPPED_TITLE_RE = re.compile(r"[A-Z]{3,}(?:[ &+'/-]+[A-Z]+)*")
+_WEEKDAY_ONLY_RE = re.compile(_WEEKDAY_LABEL, re.IGNORECASE)
 _WORKOUT_TRAILING_NOISE = " \t-–—:|.<>»«=~_©®™•·‘’“”'\""
 
 
@@ -408,6 +420,17 @@ def _workout_title(raw: str) -> str:
     return re.sub(r"[^\w&+%)]*$", "", workout).strip()
 
 
+def _title_with_continuation(workout: str, lines: list[str], index: int) -> str:
+    if workout and index + 1 < len(lines):
+        continuation = lines[index + 1].strip()
+        if (_WRAPPED_TITLE_RE.fullmatch(continuation)
+                and not _LABELED_ROW_RE.fullmatch(continuation)
+                and not _WEEKDAY_ONLY_RE.fullmatch(continuation)
+                and not continuation.startswith(("WEEK OF", "THE WEEKLY"))):
+            return f"{workout} {continuation}"
+    return workout
+
+
 def _ordered_workouts(block_text: str) -> list[str]:
     """Extract the six right-column workout names from the fixed graphic."""
     workouts = []
@@ -424,15 +447,7 @@ def _ordered_workouts(block_text: str) -> list[str]:
         workout = _workout_title(match.group("workout"))
         if not workout:
             continue
-        if index + 1 < len(lines):
-            continuation = lines[index + 1].strip()
-            # A wrapped title is an adjacent plain text line in this layout.
-            # A date/weekday row or the website footer is not part of it.
-            if (_WRAPPED_TITLE_RE.fullmatch(continuation)
-                    and not _LABELED_ROW_RE.fullmatch(continuation)
-                    and not continuation.startswith(("WEEK OF", "THE WEEKLY"))):
-                workout = f"{workout} {continuation}"
-        workouts.append(workout)
+        workouts.append(_title_with_continuation(workout, lines, index))
     if len(workouts) != len(WEEKDAYS):
         raise Level6OcrError(
             f"workout_rows_{min(len(workouts), 99)}",
@@ -455,15 +470,63 @@ def _labeled_workouts(layout: str) -> list[str]:
     return [title for _, title in rows]
 
 
-def canonicalize_weekly_ocr(block_text: str, sparse_text: str, alternate_text: str = "") -> str:
+def _recover_labeled_workouts(monday: date, layouts: tuple[str, ...]) -> list[str]:
+    """Join same-image partial reads by explicit weekday and matching titles."""
+    expected = {day: monday + timedelta(days=i) for i, day in enumerate(WEEKDAYS)}
+    tables = []
+    for layout in layouts:
+        rows = {}
+        lines = layout.splitlines()
+        for index, line in enumerate(lines):
+            match = _RECOVERY_ROW_RE.fullmatch(line) or _RECOVERY_ARROW_RE.fullmatch(line)
+            if not match:
+                continue
+            label = match['weekday'].lower()
+            day = 'Thursday' if label == 'th' else _weekday_name(label)
+            day_date = expected[day]
+            fields = match.groupdict()
+            leading_month, leading_day = fields.get('leading_month'), fields.get('leading_day')
+            month, day_number = fields.get('month'), fields.get('day')
+            if (day in rows or (leading_day and int(leading_day) != day_date.day)
+                    or (leading_month and int(leading_month) != day_date.month)
+                    or (month and (int(month), int(day_number)) != (day_date.month, day_date.day))
+                    or re.search(r"\d[.\-/]\d", fields.get('noise', ''))):
+                # A noisy layout can be discarded as a source, but its rows
+                # cannot help fill any gap by position or via a duplicate label.
+                rows = {}
+                break
+            title = _title_with_continuation(_workout_title(match['workout']), lines, index)
+            if title:
+                rows[day] = title
+        tables.append(rows)
+
+    anchor = max(tables, key=len)
+    if len(anchor) < 4:
+        return []
+    recovered = anchor.copy()
+    for rows in tables:
+        if not (anchor.keys() & rows.keys()):
+            continue
+        if any(recovered[day].casefold() != rows[day].casefold()
+               for day in recovered.keys() & rows.keys()):
+            return []
+        for day, title in rows.items():
+            recovered.setdefault(day, title)
+    return [recovered[day] for day in WEEKDAYS] if recovered.keys() == expected.keys() else []
+
+
+def canonicalize_weekly_ocr(block_text: str, sparse_text: str, alternate_text: str = "",
+                            native_text: str = "") -> str:
     """Convert same-image OCR layouts into the strict Cloud text contract."""
-    layouts = (block_text, sparse_text, alternate_text)
+    layouts = (block_text, sparse_text, alternate_text, native_text)
     marker_counts = tuple(_marker_line_count(layout) for layout in layouts)
     if max(marker_counts) == 0:
         raise Level6OcrError("marker_absent", "the weekly marker was not found")
     if max(marker_counts) > 1:
         raise Level6OcrError("ambiguous", "the weekly marker is ambiguous")
-    monday = _printed_week(*layouts)
+    monday = _printed_week(block_text, sparse_text, alternate_text)
+    if native_text and _printed_week(*layouts) != monday:
+        raise Level6OcrError("week_label_ambiguous", "the OCR passes disagree on the printed week")
     try:
         workouts = _ordered_workouts(block_text)
     except Level6OcrError as exc:
@@ -487,6 +550,8 @@ def canonicalize_weekly_ocr(block_text: str, sparse_text: str, alternate_text: s
                     else title for title in workouts
                 ]
         if not workouts:
+            workouts = _recover_labeled_workouts(monday, layouts)
+        if not workouts:
             raise
     lines = ["THE WEEKLY SIX", f"WEEK OF {monday:%m.%d.%y}"]
     for offset, (weekday, workout) in enumerate(zip(WEEKDAYS, workouts)):
@@ -500,7 +565,7 @@ def run_weekly_ocr(png_path, *, convert_bin=None,
     """Run bounded OCR with separate date and row recovery on the same image."""
     prepared = str(Path(png_path).with_suffix(".ocr.png"))
     focused = str(Path(png_path).with_suffix(".week-label.png"))
-    block = sparse = ""
+    block = sparse = alternate = native = ""
     try:
         _run_preprocess(png_path, prepared, convert_bin=convert_bin)
         block, block_truncated = run_ocr(
@@ -538,17 +603,30 @@ def run_weekly_ocr(png_path, *, convert_bin=None,
         )
         if truncated:
             return "", True
-        return canonicalize_weekly_ocr(block, sparse, alternate), False
+        try:
+            return canonicalize_weekly_ocr(block, sparse, alternate), False
+        except Level6OcrError as exc:
+            if exc.code != "workout_rows_5":
+                raise
+        # Resampling and contrast stretching can erase thin letters. Try the
+        # original screenshot once, and use it only for explicitly labeled rows.
+        native, truncated = run_ocr(
+            png_path, tesseract_bin=tesseract_bin, psm="6", timeout=OCR_PASS_TIMEOUT,
+        )
+        if truncated:
+            return "", True
+        return canonicalize_weekly_ocr(block, sparse, alternate, native), False
     except Level6OcrError as exc:
         _save_ocr_diagnostic(
-            png_path, block, sparse, exc.code, capture_info=capture_info)
+            png_path, block, sparse, exc.code, capture_info=capture_info,
+            alternate=alternate, native=native)
         raise
     finally:
         _cleanup(prepared)
         _cleanup(focused)
 
 
-def _save_ocr_diagnostic(source, block, sparse, code, capture_info=None) -> None:
+def _save_ocr_diagnostic(source, block, sparse, code, capture_info=None, *, alternate="", native="") -> None:
     """Opt-in evidence; retain at most six candidate pairs and a latest pair."""
     if os.environ.get("KYREX_LEVEL6_OCR_DEBUG") != "1":
         return
@@ -564,7 +642,9 @@ def _save_ocr_diagnostic(source, block, sparse, code, capture_info=None) -> None
             "latest.png": Path(source).read_bytes(),
             "latest.txt": (f"error: {code}\ncapture: {capture_info or {}}\n\n"
                            f"PSM 6\n{block[:MAX_OCR_BYTES]}"
-                           f"\n\nPSM 11\n{sparse[:MAX_OCR_BYTES]}").encode(),
+                           f"\n\nPSM 11\n{sparse[:MAX_OCR_BYTES]}"
+                           f"\n\nPSM 4\n{alternate[:MAX_OCR_BYTES]}"
+                           f"\n\nOriginal PSM 6\n{native[:MAX_OCR_BYTES]}").encode(),
         }
         position = (capture_info if isinstance(capture_info, dict) else {}).get("candidate_position")
         if type(position) is int and 1 <= position <= MAX_CANDIDATES:
