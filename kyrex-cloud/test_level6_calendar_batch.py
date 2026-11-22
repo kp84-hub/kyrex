@@ -42,6 +42,18 @@ PROSE_PREVIEW = "\n".join([
 
 
 class BatchTests(unittest.TestCase):
+    def test_calendar_review_skips_a_dated_studio_closure(self):
+        holiday = ["Monday 2026-09-28 — No classes - studio closed", *LINES[1:]]
+        intents = batch.intents_from_week(holiday)
+        self.assertEqual(len(intents), 5)
+        self.assertEqual(intents[0]["start"], "2026-09-29")
+        self.assertTrue(batch.week_bounds(intents)[0].startswith("2026-09-28T"))
+        preview = "#L6Workout\n🏋️ Level 6 — Workout Week\n" + "\n".join(holiday)
+        preview = preview.replace(" — trainer: ", "\nTrainer: ")
+        self.assertEqual(batch.pasted_week("Add these to my calendar " + preview), holiday)
+        with self.assertRaises(batch.CalendarBatchError):
+            batch.intents_from_week(["Monday 2026-09-28 — Missing title", *LINES[1:]])
+
     def test_reported_ocr_suffixes_clean_before_calendar_intents(self):
         import level6_weekly as weekly
         names = ['BACK & BICEPS', 'LOWER BODY PYRAMID SETS',

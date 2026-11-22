@@ -662,6 +662,7 @@ def _week_0830_classes_for_dates(
     published_workouts: dict[str, str] | None = None,
     allow_unverified_trainers: bool = False,
     report_title_conflicts: bool = False,
+    closed_dates: tuple[str, ...] = (),
     _guest_login=None,
 ) -> list[dict]:
     """Read the validated 8:30 classes for EXACTLY the trusted week's dates.
@@ -676,7 +677,8 @@ def _week_0830_classes_for_dates(
     valid — there is deliberately NO future requirement) and return the SAME
     row shape as :func:`week_0830_classes`. When the validated post supplies
     titles, a named event must match the published workout for its date.
-    Missing or duplicate classes fail the whole request. The preview can
+    A day explicitly closed in the verified post must be missing its 8:30
+    class. Missing or duplicate classes on open days fail the request. The preview can
     opt in to receiving null trainer fields when a trainer cannot be resolved
     and a title_conflict marker when the two sources disagree.
 
@@ -697,6 +699,7 @@ def _week_0830_classes_for_dates(
         events, window_days, trainers, published_workouts=published_workouts,
         allow_unverified_trainers=allow_unverified_trainers,
         report_title_conflicts=report_title_conflicts,
+        closed_dates=closed_dates,
     )
 
 
@@ -708,6 +711,7 @@ def _resolve_0830_rows(
     published_workouts: dict[str, str] | None = None,
     allow_unverified_trainers: bool = False,
     report_title_conflicts: bool = False,
+    closed_dates: tuple[str, ...] = (),
 ) -> list[dict]:
     """Filter to the exact 8:30 slot and join trainers for ONE week.
 
@@ -718,6 +722,9 @@ def _resolve_0830_rows(
     checks run ONLY against it, so a week can never be silently padded or
     trimmed, and a missing expected day fails the whole request closed.
     """
+    closed = set(closed_dates)
+    if not closed.issubset(window_days) or closed == set(window_days):
+        raise GlofoxSchemaError("closed dates must leave open days within the trusted week")
     published_names = {
         day: _workout_title_key(name)
         for day, name in (published_workouts or {}).items() if day in window_days
@@ -729,6 +736,8 @@ def _resolve_0830_rows(
         if start.hour != SLOT_HOUR or start.minute != SLOT_MINUTE:
             continue
         day = start.date().isoformat()
+        if day in closed:
+            raise GlofoxDataError(f"Glofox lists an 8:30 class on the published closure date {day}")
         name = event["name"]
         published_name = published_names.get(day)
         if (name != SCHEDULED_CLASS_NAME
@@ -745,7 +754,7 @@ def _resolve_0830_rows(
     # 8:30 AM Level 6 Training class.  A missing day, or two events claiming
     # the same expected day, fail the entire request.
     present_days = {day for day, _ev in qualifying}
-    missing = sorted(d for d in window_days if d not in present_days)
+    missing = sorted(d for d in window_days if d not in present_days and d not in closed)
     duplicates = sorted(
         d for d in window_days
         if sum(1 for day, _ in qualifying if day == d) > 1

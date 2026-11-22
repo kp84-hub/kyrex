@@ -115,7 +115,9 @@ def test_target_selection_rejects_foreign_stopped_missing_and_ambiguous(monkeypa
         chat._level6_preview_target("alice", bot("ordinary", {}))
 
 
-@pytest.mark.parametrize("scenario", ["matched", "title_conflict", "duplicate", "strict_send"])
+@pytest.mark.parametrize("scenario", [
+    "matched", "title_conflict", "duplicate", "strict_send", "holiday", "holiday_conflict",
+])
 def test_workout_preview_from_queue_to_chat(monkeypatch, tmp_path, scenario):
     import bots
     import browser_hosts
@@ -130,8 +132,10 @@ def test_workout_preview_from_queue_to_chat(monkeypatch, tmp_path, scenario):
     monkeypatch.setattr(browser_hosts, "binding_for", lambda *a: "same-host")
     monkeypatch.setattr(serve, "build_context", lambda bot_id, *a, **k: serve.ExecutionContext(
         session_id=bot_id, bot_id=bot_id, bot_owner="alice", policy=registry[bot_id]["policy"]))
-    saturday = ("WHITE OUT FOR LUNG CANCER" if scenario != "matched"
-                else "LUNG CANCER WHITE OUT WORKOUT")
+    holiday = scenario in ("holiday", "holiday_conflict")
+    saturday = ("LUNG CANCER WHITE OUT WORKOUT" if holiday or scenario == "matched"
+                else "WHITE OUT FOR LUNG CANCER")
+    thursday = "NO CLASSES - STUDIO CLOSED" if holiday else "Bench Press"
     ocr = "\n".join([
         "Level 6 Training",
         "THE WEEKLY SIX",
@@ -139,7 +143,7 @@ def test_workout_preview_from_queue_to_chat(monkeypatch, tmp_path, scenario):
         "MONDAY 11.16 Back Squat",
         "TUESDAY 11.17 Front Squat",
         "WEDNESDAY 11.18 Deadlift",
-        "THURSDAY 11.19 Bench Press",
+        f"THURSDAY 11.19 {thursday}",
         "FRIDAY 11.20 Clean & Jerk",
         f"SATURDAY 11.21 {saturday}",
     ])
@@ -158,6 +162,8 @@ def test_workout_preview_from_queue_to_chat(monkeypatch, tmp_path, scenario):
         "trainers": ["coach"],
         "trainers_obj": [{"_id": "coach", "name": "Coach One"}],
     } for day in range(16, 22)]
+    if scenario == "holiday":
+        events = [event for event in events if event["_id"] != "event-19"]
     if scenario == "title_conflict":
         events[-1]["trainers"] = []
         events[-1]["trainers_obj"] = []
@@ -193,11 +199,21 @@ def test_workout_preview_from_queue_to_chat(monkeypatch, tmp_path, scenario):
         assert "duplicate 8:30" in reply
         assert "message_draft" not in message
         return
+    if scenario == "holiday_conflict":
+        assert task["status"] == "failed"
+        assert "Glofox lists an 8:30 class on the published closure date 2026-11-19" in reply
+        assert "message_draft" not in message
+        return
     assert task["status"] == "done", task["error"]
     assert result["mode"] == "level6_preview"
     assert result["count"] == 6
     assert "Monday 2026-11-16 — Back Squat" in reply
-    if scenario == "matched":
+    if scenario == "holiday":
+        draft = message["message_draft"]["text"]
+        assert draft == result["message_text"]
+        assert "Thursday 2026-11-19 — No classes - studio closed\nFriday" in draft
+        assert draft.count("Trainer: Coach One") == 5
+    elif scenario == "matched":
         assert "Saturday 2026-11-21 — LUNG CANCER WHITE OUT WORKOUT\nTrainer: Coach One" in reply
         assert "Preview only — nothing sent." in reply
         assert message["message_draft"]["text"] == result["message_text"]

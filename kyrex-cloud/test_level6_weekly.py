@@ -163,6 +163,32 @@ def run_weekly(result=None, glofox=None, dispatch_error=None, today=MIDWEEK):
     return lines, seen
 
 
+def check_holiday_preview():
+    text = OCR_TEXT.replace("Bench Press", "NO CLASSES - STUDIO CLOSED")
+    closed = WEEK_DATES[3]
+    open_dates = [day for day in WEEK_DATES if day != closed]
+
+    def reader(dates, *, published_workouts, allow_unverified_trainers,
+               report_title_conflicts, closed_dates):
+        assert list(dates) == list(WEEK_DATES) and closed_dates == (closed,)
+        assert published_workouts[closed] == "NO CLASSES - STUDIO CLOSED"
+        assert allow_unverified_trainers and report_title_conflicts
+        return glofox_rows(open_dates)
+
+    lines, conflicts = l6.run_weekly_preview(
+        dispatch=lambda _: (host_ok(text), None), glofox_read=reader, today=MIDWEEK)
+    check("a verified closure stays in the six-line preview without a trainer",
+          len(lines) == 6 and lines[3] == f"Thursday {closed} — {l6.STUDIO_CLOSED}" and not conflicts)
+    six = l6.parse_ocr_text(text)
+    expect_error("a class returned for the published closure fails validation",
+                 lambda: l6.join_week(six, glofox_rows()))
+    expect_error("a missing open day still fails validation",
+                 lambda: l6.join_week(six, glofox_rows(open_dates[:-1])))
+
+
+check_holiday_preview()
+
+
 # ══ 1. dedicated fail-closed policy ═══════════════════════════════════
 
 print("\nTest 1: the dedicated Level 6 Weekly policy grant")

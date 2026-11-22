@@ -11,6 +11,7 @@ from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 import cal_writer
+from level6_weekly import STUDIO_CLOSED, is_studio_closed
 
 TZ = ZoneInfo("America/New_York")
 WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
@@ -18,7 +19,7 @@ TITLE_PREFIX = "Level 6 Workout: "
 PASTED_TASK_PREFIX = 'create-pasted-weekly-calendar '
 _LINE = re.compile(
     r"^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday) "
-    r"(\d{4}-\d{2}-\d{2}) — (.+) — trainer: (.+)$"
+    r"(\d{4}-\d{2}-\d{2}) — (.+?)(?: — trainer: (.+))?$"
 )
 _REQUEST = re.compile(
     r"(?:add|create|put|schedule)\s+"
@@ -60,6 +61,10 @@ def pasted_week(text):
             r'(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday)\s+(\d{4}-\d{2}-\d{2})\s+[—–-]\s+'
             r'(.{1,200}?)\s+(?:[—–-]\s*)?[Tt]rainer:\s+([\w .,&\x27/()-]{1,100})', row)
         if not parsed:
+            closure = re.fullmatch(r'([A-Za-z]+)\s+(\d{4}-\d{2}-\d{2})\s+[—–-]\s+(.+)', row)
+            if closure and is_studio_closed(closure[3]):
+                lines.append(f'{closure[1]} {closure[2]} — {STUDIO_CLOSED}')
+                continue
             raise CalendarBatchError('Each pasted row needs a weekday, date, workout name and trainer; class times are not inferred.')
         lines.append(f'{parsed[1]} {parsed[2]} — {parsed[3].strip()} — trainer: {parsed[4].strip()}')
     intents_from_week(lines)
@@ -134,14 +139,14 @@ def is_workout_followup(text: str, messages) -> bool:
 
 
 def intents_from_week(lines) -> list[dict]:
-    """Validate exactly six joined workouts and build Writer-compatible intents."""
+    """Validate six dated rows and build Writer intents for open days."""
     if not isinstance(lines, list) or len(lines) != 6:
         raise CalendarBatchError("the weekly result must contain six days")
     intents = []
     monday = None
     for offset, line in enumerate(lines):
         match = _LINE.fullmatch(line) if isinstance(line, str) else None
-        if not match or match.group(1) != WEEKDAYS[offset] or not match.group(4).strip():
+        if not match or match.group(1) != WEEKDAYS[offset]:
             raise CalendarBatchError("a weekly workout row is invalid")
         try:
             day = date.fromisoformat(match.group(2))
@@ -153,20 +158,28 @@ def intents_from_week(lines) -> list[dict]:
                 raise CalendarBatchError("the weekly result does not start Monday")
         if day != monday + timedelta(days=offset):
             raise CalendarBatchError("the weekly dates are not consecutive")
+        workout, trainer = match.group(3, 4)
+        if is_studio_closed(workout) and trainer is None:
+            continue
+        if not trainer or not trainer.strip() or is_studio_closed(workout):
+            raise CalendarBatchError("a weekly workout row is invalid")
         try:
             intents.append(cal_writer.build_intent(
-                TITLE_PREFIX + match.group(3).strip(), day.isoformat(),
+                TITLE_PREFIX + workout.strip(), day.isoformat(),
                 None, None, all_day=True))
         except cal_writer.CalendarWriterError as exc:
             raise CalendarBatchError("a workout title is invalid") from exc
+    if not intents:
+        raise CalendarBatchError("the weekly result contains no workouts")
     return intents
 
 
 def week_bounds(intents: list[dict]) -> tuple[str, str]:
-    """Return local [Monday, Sunday) bounds for a complete-calendar read."""
+    """Return local Monday-through-Saturday bounds for a complete-calendar read."""
     start = date.fromisoformat(intents[0]["start"])
-    beginning = datetime.combine(start, time.min, tzinfo=TZ)
-    ending = datetime.combine(start + timedelta(days=6), time.min, tzinfo=TZ)
+    monday = start - timedelta(days=start.weekday())
+    beginning = datetime.combine(monday, time.min, tzinfo=TZ)
+    ending = datetime.combine(monday + timedelta(days=6), time.min, tzinfo=TZ)
     return beginning.isoformat(), ending.isoformat()
 
 
