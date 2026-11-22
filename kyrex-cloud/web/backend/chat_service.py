@@ -1629,8 +1629,6 @@ class EngineSession:
                         approved, result = self._handle_email_draft(frame)
                         self._send({"type": "confirm_response", "id": frame.get("id"),
                                     "approved": approved, "result": result})
-                        self._send({"type":"confirm_response", "id":frame.get('id'),
-                                    "approved":approved, "result":result})
                     elif _confirm_value == "budget_read":
                         approved, result = self._handle_budget_read(frame)
                         self._send({"type":"confirm_response", "id":frame.get('id'),
