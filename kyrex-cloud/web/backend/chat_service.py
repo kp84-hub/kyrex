@@ -2013,6 +2013,31 @@ def ensure_level6_preview_conversation(user: str, recipient: str) -> str:
     return identity
 
 
+def publish_calendar_briefing(user, row, briefing_store):
+    """Publish verified, owner-scoped Calendar evidence in the existing coordinator chat."""
+    import calendar_briefing
+    cfg = briefing_store.current(user, row['revision'])
+    bot_id = cfg['bot']
+    with _bot_conversation_lock(user, bot_id):
+        current = briefing_store.current(user, row['revision'])
+        if current['bot'] != bot_id:
+            raise ValueError('Calendar briefing destination changed.')
+        if calendar_briefing.quiet_at(current, datetime.now(calendar_briefing.TZ)):
+            return None
+        conv_id = _existing_or_new_bot_conversation(user, bot_id)['conversation_id']
+        conv = json.loads(_conv_path(user, conv_id).read_text())
+        if conv.get('bot_id') != bot_id or conv.get('workspace_id'):
+            raise ValueError('Calendar briefing conversation changed.')
+        identity = f"calendar-briefing-{row['revision']}-{row['identity']}"
+        if not any(message.get('id') == identity for message in conv.get('messages', [])):
+            from connectors import unseal_tokens
+            body = unseal_tokens(row['body'])['body']
+            message = _append_message(user, conv, 'assistant', body, identity=identity)
+            message['model_content'] = 'A scheduled Google Calendar update was delivered to this chat.'
+            _write(user, conv)
+        return conv['conversation_id']
+
+
 def ensure_level6_trainer_conversation(user: str, bot_id=None) -> str:
     from level6_trainer_store import TrainerStore
     import level6_trainer_monitor

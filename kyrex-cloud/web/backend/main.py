@@ -941,6 +941,8 @@ import automation_api  # noqa: E402
 app.include_router(automation_api.router)
 import level6_trainer_api  # noqa: E402
 app.include_router(level6_trainer_api.router)
+import calendar_briefing_api
+app.include_router(calendar_briefing_api.router)
 import calendar_watch_api
 app.include_router(calendar_watch_api.router)
 import budget_api

@@ -5049,6 +5049,12 @@ def run_task(chat_id, repo_url, task_text, executor_prefix="repo",
             run_cleanup(ctx,str(chat_id),task_text,task_id,send,on_result=on_result,
                         on_approval=on_approval,on_approval_resolved=on_approval_resolved,on_progress=on_progress)
             return
+        if executor_prefix == 'calendar_briefing':
+            from calendar_briefing import run_scan as run_briefing
+            result = run_briefing(ctx, str(chat_id), task_text, task_id)
+            if on_result:
+                on_result(result)
+            return
         if executor_prefix == 'calendar_watch':
             from calendar_watch import run_scan
             run_scan(ctx, str(chat_id), task_text, task_id, send,

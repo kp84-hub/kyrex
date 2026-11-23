@@ -1160,7 +1160,7 @@ class CalendarRead:
 
     def events(self, *, time_min=None, time_max=None, max_results=25,
                calendar_id="primary", query=None,
-               require_complete=False) -> list:
+               require_complete=False, briefing=False) -> list:
         """List the owner's events in a bounded window (read-only).
 
         Uses ``singleEvents=true`` and ``orderBy=startTime``. A malformed
@@ -1180,10 +1180,26 @@ class CalendarRead:
             params["timeMax"] = str(time_max)
         if query:
             params["q"] = str(query)
-        out = self._transport(
-            "GET",
-            f"{api}/calendars/{urllib.parse.quote(str(calendar_id), safe='')}/events",
-            token, params)
+        url = f"{api}/calendars/{urllib.parse.quote(str(calendar_id), safe='')}/events"
+        if briefing:
+            # Include explicit cancellations, with only fields used by the briefing.
+            params.update(showDeleted="true", fields="nextPageToken,items(id,status,summary,start,end,location,recurringEventId,htmlLink)")
+            items = []
+            for _ in range(5):
+                page = self._transport("GET", url, token, params)
+                if not isinstance(page, dict) or not isinstance(page.get("items"), list):
+                    raise ConnectorUnavailable("calendar briefing page was malformed")
+                items.extend(page["items"])
+                next_page = page.get("nextPageToken")
+                if not next_page:
+                    if any(not isinstance(event, dict) for event in items):
+                        raise ConnectorUnavailable("calendar briefing contained an invalid event")
+                    return [_calendar_briefing_event(event, self._owner) for event in items]
+                if not isinstance(next_page, str) or len(next_page) > 2048 or next_page == params.get("pageToken"):
+                    break
+                params["pageToken"] = next_page
+            raise ConnectorUnavailable("calendar briefing lookup was incomplete")
+        out = self._transport("GET", url, token, params)
         if not isinstance(out, dict):
             raise ConnectorUnavailable("malformed calendar response")
         if require_complete and out.get("nextPageToken"):
@@ -1598,6 +1614,19 @@ def _calendar_event(event: dict, owner: str) -> dict:
         "start": _split_when(event.get("start")),
         "end": _split_when(event.get("end")),
     }
+
+
+
+def _calendar_briefing_event(event: dict, owner: str) -> dict:
+    row = _calendar_event(event, owner)
+    # Google Calendar's event identifier is the only supported link parameter.
+    # Never propagate arbitrary provider URLs or query values.
+    link = re.fullmatch(r"https://(?:calendar|www)[.]google[.]com/calendar/event[?]eid=([A-Za-z0-9_-]{1,512})",
+                        str(event.get("htmlLink") or ""))
+    row.update(location=redact_text(event.get("location"))[:200],
+               recurring=bool(event.get("recurringEventId")),
+               link=f"https://calendar.google.com/calendar/event?eid={link[1]}" if link else "")
+    return row
 
 
 def _calendar_created(event: dict, owner: str) -> dict:
