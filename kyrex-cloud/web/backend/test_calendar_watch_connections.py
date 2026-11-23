@@ -68,21 +68,48 @@ def test_enable_uses_real_calendar_mail_phone_and_model_connections(connected):
     assert 'event-review-test-access' not in response.text and 'event-review-test-key' not in response.text
 
 
-@pytest.mark.parametrize('denied', ['read', 'write', 'disconnected', 'foreign'])
-def test_calendar_scope_and_owner_failures_leave_review_paused(connected, denied):
+@pytest.mark.parametrize('denied', ['read', 'write', 'disconnected'])
+def test_discovery_can_be_enabled_without_calendar_write_authority(connected, denied):
     c = connected
-    if denied in ('read', 'write'):
-        c.record['scopes'].remove(connectors.GOOGLE_CALENDAR_READ_SCOPE if denied == 'read' else connectors.GOOGLE_CALENDAR_WRITE_SCOPE)
-    elif denied == 'disconnected':
+    if denied == 'disconnected':
         c.record['status'] = 'disconnected'
     else:
-        c.registry['assistant']['owner'] = 'bob'
+        c.record['scopes'].remove(connectors.GOOGLE_CALENDAR_READ_SCOPE if denied == 'read' else connectors.GOOGLE_CALENDAR_WRITE_SCOPE)
     c.save_record()
-    # Mail validation has its own grant; keep this check about Calendar scope.
+    response = c.client.put('/api/automations/calendar-events', json={**c.payload, 'emails': False})
+    assert response.status_code == 200, response.text
+    assert response.json()['settings']['enabled'] is True
+    assert response.json()['calendar_bound'] is False
+    store = watch.WatchStore(c.tasks)
+    cfg = store.settings('alice')
+    with pytest.raises(ValueError, match='Calendar account or destination changed'):
+        store.valid('alice', cfg['revision'], 'messages')
+    assert c.calls == [] and c.tasks.list_tasks() == []
+
+
+def test_foreign_bot_cannot_enable_discovery(connected):
+    c = connected
+    c.registry['assistant']['owner'] = 'bob'
     response = c.client.put('/api/automations/calendar-events', json={**c.payload, 'emails': False})
     assert response.status_code == 409, response.text
     assert watch.WatchStore(c.tasks).settings('alice')['enabled'] is False
     assert c.calls == [] and c.tasks.list_tasks() == []
+
+
+def test_scan_now_uses_the_same_schedule_and_does_not_restart_an_active_scan(connected):
+    c = connected
+    path = '/api/automations/calendar-events'
+    assert c.client.post(path + '/scan').status_code == 409
+    assert c.client.put(path, json=c.payload).status_code == 200
+    watch.submit_due(c.tasks)
+    task = c.tasks.claim_next('event-review-test')
+    store = watch.WatchStore(c.tasks)
+    scheduled = store.settings('alice')['next_scan']
+    assert c.client.post(path + '/scan').json()['scan_pending'] is True
+    assert store.settings('alice')['next_scan'] == scheduled
+    assert len(c.tasks.list_tasks()) == 1
+    assert task['executor_prefix'] == 'calendar_watch'
+    assert c.client.post(path + '/scan', headers={'x-user':'bob'}).status_code == 409
 
 
 def test_phone_repair_and_calendar_reconnection_invalidate_saved_bindings(connected):

@@ -123,23 +123,42 @@ def intent_from_fields(fields):
     return cal_writer.validate_intent(intent)
 
 
-async def extract(owner, bot, sources):
+class ExtractionError(ValueError):
+    """A safe status for a failed extraction request."""
+
+
+async def extract(owner, bot, sources, rejected=None):
     import bot_provider
     from kyrex.providers import get_provider
-    cfg = bot_provider.resolve_bot_provider(owner, bot)
-    provider = get_provider(cfg['provider'], cfg['api_key'], base_url=cfg['base_url'],
-                            extra_headers=cfg['headers'], session_id='calendar-watch')
-    result = await asyncio.wait_for(provider.chat(model=cfg['model'], tools=None, messages=[
-        {'role': 'system', 'content': PROMPT},
-        {'role': 'user', 'content': json.dumps([{'key': s['key'], 'text': s['text']} for s in sources])}]), timeout=120)
-    raw = (result or {}).get('content')
-    if (not isinstance(raw, str) or len(raw) > 50000 or result.get('error') or result.get('tool_calls')):
-        raise ValueError('The selected Bot could not extract calendar suggestions.')
+    try:
+        cfg = bot_provider.resolve_bot_provider(owner, bot)
+    except bot_provider.BotProviderError:
+        raise ExtractionError('The selected Bot needs setup. Check its configuration in Bots.') from None
+    try:
+        provider = get_provider(cfg['provider'], cfg['api_key'], base_url=cfg['base_url'],
+                                extra_headers=cfg['headers'], session_id='calendar-watch')
+        result = await asyncio.wait_for(provider.chat(model=cfg['model'], tools=None, messages=[
+            {'role': 'system', 'content': PROMPT},
+            {'role': 'user', 'content': json.dumps([{'key': s['key'], 'text': s['text']} for s in sources])}]), timeout=120)
+    except Exception:
+        raise ExtractionError('Kyrex could not reach the selected Bot. Check its configuration in Bots.') from None
+    raw = result.get('content') if isinstance(result, dict) else None
+    if not isinstance(raw, str) or len(raw) > 50000 or result.get('error') or result.get('tool_calls'):
+        raise ExtractionError('The selected Bot could not extract calendar suggestions.')
     try:
         obj = json.loads(re.sub(r'^```(?:json)?\s*|\s*```$', '', raw.strip()))
         if not isinstance(obj, dict) or set(obj) != {'events'} or not isinstance(obj['events'], list) or len(obj['events']) > 20:
             raise ValueError()
-        by_id = {s['key']: s for s in sources}
-        return [(by_id[e['source']], draft(e, by_id[e['source']])) for e in obj['events']]
+        by_id = {source['key']: source for source in sources}
+        drafts = []
+        for entry in obj['events']:
+            source = by_id[entry['source']]
+            try:
+                drafts.append((source, draft(entry, source)))
+            except (ValueError, KeyError, TypeError):
+                if rejected is None:
+                    raise
+                rejected.add(source['key'])
+        return [(source, item) for source, item in drafts if rejected is None or source['key'] not in rejected]
     except (ValueError, KeyError, TypeError):
-        raise ValueError('Event extraction returned invalid evidence; those messages will be checked again.') from None
+        raise ExtractionError('Event extraction returned invalid evidence. Those messages will be retried.') from None

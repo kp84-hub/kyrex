@@ -406,3 +406,90 @@ def test_pause_expires_prepared_reviews_and_all_day_duplicates_are_skipped(f):
     assert watch.pending_event('alice',row)[1] == [event]
     f.store.configure('alice',enabled=False,emails=True,messages=True,bot_id='assistant',interval_seconds=3600)
     with pytest.raises(ValueError,match='paused'): f.store.review('alice',identity,row['revision'])
+
+
+def test_email_discovery_continues_when_phone_and_calendar_bindings_change(f, monkeypatch):
+    f.source_binding['messages'] = 'repaired-phone'
+    f.account['connected_at'] = 456
+
+    class Inbox:
+        def search(self, **kwargs):
+            return {'messages': [{'id': 'bad-mail'}, {'id': f.source['ref']['id']}]}
+
+        def read_message(self, identity):
+            if identity == 'bad-mail':
+                raise connectors.ConnectorUnavailable('fixture unreadable')
+            return {'owner': 'alice', 'id': identity, 'body': f.source['text'],
+                    'headers': {'From':'School', 'Subject':'Science fair', 'Date':f.source['received']}}
+
+    reader = SimpleNamespace(rows={'box': {'address': 'family@example.test'}},
+                             _reader=lambda account: Inbox(), _check=lambda: None)
+    monkeypatch.setattr(sources.email_accounts, 'default_store', lambda: SimpleNamespace(reader=lambda owner: reader))
+    monkeypatch.setattr(sources.device_messages, 'MessagesStore', lambda: pytest.fail('Changed phone was read'))
+    monkeypatch.setattr(f.conn, 'calendar', lambda owner: pytest.fail('Changed Calendar was read'))
+
+    async def extract(owner, bot, batch, rejected):
+        assert len(batch) == 1
+        source = batch[0]
+        return [(source, events.draft({**f.entry, 'source': source['key']}, source))]
+    monkeypatch.setattr(events, 'extract', extract)
+    watch.submit_due(f.tasks)
+    task = f.tasks.claim_next('scan-worker')
+    watch.run_scan(SimpleNamespace(bot_owner='alice', bot_id='assistant'), 'alice', task['task_text'],
+                   task['task_id'], lambda *args: None)
+    row, = f.store.rows('alice')
+    saved = f.store.view('alice', row['id'])
+    assert saved['state'] == 'pending' and saved['fields']['title'] == 'Science fair'
+    assert not f.writes
+    detail = f.store.settings('alice')['detail']
+    assert '1 new Calendar suggestion' in detail
+    assert 'phone message connection changed' in detail
+    assert watch.CALENDAR_UNVERIFIED in detail and 'An email could not be read' in detail
+    with pytest.raises(ValueError, match='destination changed'):
+        f.store.review('alice', row['id'], row['revision'])
+
+
+def test_failed_mail_binding_is_explained_without_re_targeting_scan(f, monkeypatch):
+    f.source_binding['email'] = ['mailboxes', 'different']
+    f.source_binding['messages'] = 'different-phone'
+    monkeypatch.setattr(sources.email_accounts, 'default_store', lambda: pytest.fail('Changed inbox was read'))
+    watch.submit_due(f.tasks)
+    task = f.tasks.claim_next('scan-worker')
+    with pytest.raises(ValueError, match='stopped during sources'):
+        watch.run_scan(SimpleNamespace(bot_owner='alice', bot_id='assistant'), 'alice', task['task_text'],
+                       task['task_id'], lambda *args: None)
+    cfg = f.store.settings('alice')
+    assert 'email connection changed' in cfg['detail']
+    assert not cfg['last_scan'] and not f.store.rows('alice') and not f.writes
+
+
+def test_one_invalid_extraction_cannot_block_another_message(f, monkeypatch):
+    import kyrex.providers
+
+    async def chat(**kwargs):
+        return {'content': json.dumps({'events': [
+            {**f.entry, 'source': 'second', 'title_quote': 'NOT QUOTED'},
+            f.entry,
+        ]})}
+    monkeypatch.setattr(kyrex.providers, 'get_provider', lambda *a, **kw: SimpleNamespace(chat=chat))
+    monkeypatch.setattr(bot_provider, 'resolve_bot_provider', lambda *a: {
+        'provider':'fixture','api_key':'fixture-value','base_url':'https://model.example.test/v1',
+        'headers':{},'model':'owner-selected-model'})
+    rejected = set()
+    extracted = asyncio.run(events.extract('alice', f.registry['assistant'],
+                                          [f.source, {**f.source, 'key':'second'}], rejected))
+    assert rejected == {'second'} and [src['key'] for src, draft in extracted] == [f.source['key']]
+
+
+def test_legacy_failed_scan_retries_once_before_next_scheduled_time(f, monkeypatch):
+    monkeypatch.setattr(sources, 'collect', lambda *a: ([], []))
+    now = time.time()
+    with f.store.db() as db:
+        db.execute('UPDATE calendar_watch_settings SET next_scan=?,detail=? WHERE owner=?',
+                   (now + 3000, watch.LEGACY_SCAN_FAILURE, 'alice'))
+    watch.submit_due(f.tasks, now=now)
+    current = f.store.settings('alice')
+    assert current['next_scan'] == now + f.cfg['interval_seconds']
+    assert current['detail'] == ''
+    watch.submit_due(f.tasks, now=now+1)
+    assert len(f.tasks.list_tasks()) == 1
