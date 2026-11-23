@@ -24,6 +24,22 @@ export default function EventReviewSettings({ onOpenConversation }) {
     eventReviewRequest().then(value => { if (alive) accept(value); }).catch(e => { if (alive) setError(e.message); });
     return () => { alive = false; };
   }, [reload]);
+  useEffect(() => {
+    if (!view?.scan_pending) return;
+    let active = true;
+    const timer = setTimeout(() => {
+      eventReviewRequest().then(value => { if (active) setView(value); })
+        .catch(e => { if (active) { setError(e.message); setView(previous => ({ ...previous, scan_pending: false })); } });
+    }, 3500);
+    return () => { active = false; clearTimeout(timer); };
+  }, [view]);
+  const scanNow = async () => {
+    if (busy || view?.scan_pending) return;
+    setBusy(true); setError(''); setNotice('');
+    try { setView(await eventReviewRequest('/scan', 'POST')); }
+    catch (e) { setError(e.message); }
+    finally { setBusy(false); }
+  };
   const save = async event => {
     event.preventDefault(); if (busy) return;
     setBusy(true); setError(''); setNotice('');
@@ -47,10 +63,14 @@ export default function EventReviewSettings({ onOpenConversation }) {
       </select></label>
       <p className="email-automation-note">The first scan checks messages received in the previous 24 hours. Later checks use recent content, without repeating dismissed suggestions. Scans use your selected Bot’s model.</p>
       <p className="email-automation-note">Phone coverage is limited to synced text: up to 100 messages from 10 recent conversations. Attachments and browser-only Messages connections are excluded. Keep your phone synced.</p>
-      <p className="email-automation-note">Times use {view.timezone}. Missing times need your input. Source or Calendar account changes require saving these settings again.</p>
+      <p className="email-automation-note">Times use {view.timezone}. Missing times need your input. If you switch inboxes or calendars, save these settings again.</p>
       <button type="submit" className="send-btn" disabled={busy}>{busy ? 'Saving…' : 'Save event review'}</button>
     </form>}
-    {view?.settings.last_scan && <p>Last check: {new Date(view.settings.last_scan * 1000).toLocaleString()}</p>}
+    {view?.settings.enabled && !view.calendar_bound && <p>Connect Google Calendar and save Event Review again before approving additions. Inbox scanning is available.</p>}
+    {view?.settings.enabled && <button type="button" disabled={busy || view.scan_pending} onClick={scanNow}>
+      {view.scan_pending ? 'Scan queued or running…' : 'Scan now'}
+    </button>}
+    {view?.settings.last_scan && <p>Last completed scan: {new Date(view.settings.last_scan * 1000).toLocaleString()}</p>}
     {view?.settings.detail && <p role="status">{view.settings.detail}</p>}
     {view?.configured && onOpenConversation && <button type="button" disabled={busy} onClick={() => onOpenConversation(view.conversation_id)}>Open Calendar suggestions</button>}
     {notice && <p role="status">{notice}</p>}{error && <div role="alert" className="message-error"><p>{error}</p>

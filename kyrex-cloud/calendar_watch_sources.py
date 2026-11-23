@@ -56,6 +56,35 @@ def check(owner, cfg):
         raise ValueError('Source connections or selected inboxes changed. Save event review settings again.')
 
 
+class SourceUnavailable(ValueError):
+    """A selected source cannot be read under its saved binding."""
+
+
+def check_source(owner, cfg, kind):
+    email = kind == 'email'
+    keys = ('email', 'legacy_google') if email else ('messages',)
+    name = 'email' if email else 'phone message'
+    if not cfg['emails' if email else 'messages']:
+        raise SourceUnavailable(f'The {name} source is no longer enabled.')
+    try:
+        current = binding(owner, email, not email)
+    except (connectors.ConnectorError, ValueError):
+        fix = ('Check Connections → Email accounts.' if email
+               else 'Open Kyrex on your phone and sync Messages.')
+        raise SourceUnavailable(f'The selected {name} connection is unavailable. {fix}') from None
+    if any(current.get(key) != cfg['binding'].get(key) for key in keys):
+        raise SourceUnavailable(f'The selected {name} connection changed. Save Event Review settings again.')
+
+
+def source_ready(owner, cfg, kind, notes):
+    try:
+        check_source(owner, cfg, kind)
+        return True
+    except SourceUnavailable as exc:
+        notes.append(str(exc))
+        return False
+
+
 def _email_source(owner, account, native_id, reader):
     value = reader._reader(account).read_message(native_id)
     reader._check()
@@ -83,11 +112,12 @@ def _phone_source(item, synced):
 
 
 def collect(owner, cfg, seen, now):
-    """Bounded source enumeration. Partial failure never masquerades as no mail."""
-    check(owner, cfg)
+    """Read each still-authorized source and keep coverage failures visible."""
     sources, notes = [], []
+    covered = False
     cutoff = max(cfg['since'], now - 7 * 86400)
-    if cfg['emails']:
+    if cfg['emails'] and source_ready(owner, cfg, 'email', notes):
+        email_sources = []
         try:
             reader = email_accounts.default_store().reader(owner)
             for account in reader.rows:
@@ -97,32 +127,48 @@ def collect(owner, cfg, seen, now):
                     if page.get('next_page_token'):
                         notes.append('Email scan reached its 50-message limit for one inbox; older messages may be outside coverage.')
                     for hit in page.get('messages', [])[:50]:
-                        ref = {'kind': 'email', 'account': account, 'id': hit['id']}
-                        if seen(digest(ref)): continue
-                        source = _email_source(owner, account, hit['id'], reader)
-                        received = source['received']
-                        if received and datetime.fromisoformat(received).timestamp() >= cutoff:
-                            sources.append(source)
-                        elif not received:
-                            notes.append('An email without a reliable received date could not be scanned.')
-                except Exception:
+                        try:
+                            ref = {'kind': 'email', 'account': account, 'id': hit['id']}
+                            if seen(digest(ref)):
+                                continue
+                            source = _email_source(owner, account, hit['id'], reader)
+                            received = source['received']
+                            if received and datetime.fromisoformat(received).timestamp() >= cutoff:
+                                email_sources.append(source)
+                            elif not received:
+                                notes.append('An email without a reliable received date could not be scanned.')
+                        except (connectors.ConnectorError, ValueError, KeyError, TypeError, OSError):
+                            notes.append('An email could not be read and will be retried.')
+                    covered = True
+                except (connectors.ConnectorError, ValueError, OSError):
                     notes.append('One selected inbox could not be read. Its messages will be checked again.')
-        except Exception:
-            notes.append('Selected email accounts could not be read. Check their connection status.')
-    if cfg['messages']:
+        except (connectors.ConnectorError, ValueError, OSError):
+            notes.append('Selected email accounts could not be read. Check Connections → Email accounts.')
+        if source_ready(owner, cfg, 'email', notes):
+            sources.extend(email_sources)
+        else:
+            covered = False
+    if cfg['messages'] and source_ready(owner, cfg, 'messages', notes):
+        phone_sources = []
         try:
             payload, synced = device_messages.MessagesStore()._snapshot(owner)
             if not synced or synced < now - 86400:
                 raise ValueError()
             for item in payload['messages']:
                 source = _phone_source(item, synced)
-                if seen(source['key']): continue
+                if seen(source['key']):
+                    continue
                 if source['received'] and datetime.fromisoformat(source['received']).timestamp() >= cutoff:
-                    sources.append(source)
-            notes.append('Messages coverage: synced text snapshot only, up to 100 messages from 10 recent conversations.')
-        except Exception:
+                    phone_sources.append(source)
+            if source_ready(owner, cfg, 'messages', notes):
+                sources.extend(phone_sources)
+                covered = True
+                notes.append('Messages coverage: synced text snapshot only, up to 100 messages from 10 recent conversations.')
+        except (ValueError, LookupError, OSError):
             notes.append('Phone messages are unavailable or the snapshot is over 24 hours old. Open Kyrex on your phone and sync.')
-    check(owner, cfg)
+    if not covered:
+        raise SourceUnavailable(' '.join(dict.fromkeys(notes)) or
+                                'No selected source could be scanned. Check Event Review settings.')
     # Round-robin inboxes plus messages so a busy mailbox cannot starve SMS.
     groups = {}
     for source in sources:
@@ -133,10 +179,9 @@ def collect(owner, cfg, seen, now):
             if group: ordered.append(group.pop(0))
     return ordered, list(dict.fromkeys(notes))
 
-
 def reread(owner, cfg, source):
-    check(owner, cfg)
     ref = source['ref']
+    check_source(owner, cfg, ref['kind'])
     if ref['kind'] == 'email':
         current = _email_source(owner, ref['account'], ref['id'], email_accounts.default_store().reader(owner))
     else:
@@ -145,5 +190,5 @@ def reread(owner, cfg, source):
                         if _phone_source(item, synced)['key'] == source['key']), None)
     if not current or current['digest'] != source['digest']:
         raise ValueError('The source message changed or is outside current synced history. Review it again before adding an event.')
-    check(owner, cfg)
+    check_source(owner, cfg, ref['kind'])
     return current

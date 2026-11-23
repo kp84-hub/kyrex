@@ -39,6 +39,7 @@ def settings(user):
         'bots':[{'id':b['id'],'name':b.get('name') or b['id']} for b in bots.load_bots().values()
                 if b.get('owner') == user and bots.is_running(b)],
         'conversation_id':watch.conversation_id(user), 'configured':bool(cfg['revision']),
+        'scan_pending':store.scan_pending(user), 'calendar_bound':bool(cfg.get('destination')),
         'timezone':watch.cal_writer.TIMEZONE}
 
 
@@ -63,6 +64,14 @@ async def configure(request: Request, body: Settings):
     await run_in_threadpool(call, store.configure, user, **body.model_dump())
     chat_service.ensure_calendar_suggestions_conversation(user)
     return response(settings(user))
+
+
+@router.post('/scan')
+def scan(request: Request):
+    user = owner(request, True)
+    store = watch.WatchStore(chat_service._task_store())
+    call(store.request_scan, user)
+    return response(call(settings, user))
 
 
 @router.get('/suggestions/{identity}')
@@ -120,7 +129,7 @@ def decision(request: Request, identity: str, body: Decision):
     if row['revision'] != body.revision or row['state'] != 'reviewing' or row['attempted']:
         raise HTTPException(409, 'The saved event review changed. Reload it.')
     if body.decision == 'approve':
-        call(store.valid, user, row['settings_revision'])
+        call(store.valid, user, row['settings_revision'], row['source']['ref']['kind'])
     task = store.tasks.get(row['task_id']) or {}
     approval = store.tasks.get_pending_approval(row['task_id']) or {}
     if (task.get('chat_id') != user or task.get('executor_prefix') != 'event_calendar'

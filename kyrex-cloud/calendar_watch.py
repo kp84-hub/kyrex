@@ -40,7 +40,7 @@ def conversation_id(owner):
     return hashlib.sha256(('calendar-suggestions:' + owner).encode()).hexdigest()[:32]
 
 
-def context_bot(owner, bot_id, cfg=None, write=False):
+def context_bot(owner, bot_id, cfg=None, write=False, scan_only=False):
     import account_store
     if account_store.isolated(owner):
         account = account_store.get(owner)
@@ -51,7 +51,7 @@ def context_bot(owner, bot_id, cfg=None, write=False):
     bot = bots.load_bots().get(bot_id) or {}
     if bot.get('owner') != owner or not bots.is_running(bot):
         raise ValueError('Choose a running Bot owned by this account.')
-    ops = ['cal:list'] + (['cal:create'] if write else [])
+    ops = [] if scan_only else ['cal:list'] + (['cal:create'] if write else [])
     if cfg:
         ops += (['gmail:read', 'mail:read'] if cfg['emails'] else [])
         ops += ['messages:read'] if cfg['messages'] else []
@@ -70,12 +70,22 @@ def destination(owner):
     conn = connectors.default_store()
     if (not conn.scope_granted(owner, connectors.GOOGLE_CALENDAR_READ_SCOPE)
             or not conn.calendar_write_available(owner)):
-        raise ValueError('Connect Google Calendar read and write access before enabling event review.')
+        raise ValueError('Connect Google Calendar with read and write access before adding suggestions.')
     status = conn.status(owner)
     if not status.get('connected_at'):
         raise ValueError('Reconnect Google Calendar to verify its account.')
     return {'connected_at': status['connected_at'], 'calendar': conn.preferred_calendar(owner),
             'email': conn.account_view(owner).get('email') or 'Your connected Google account'}
+
+
+class ScanStopped(ValueError):
+    """A safe, owner-facing scan failure."""
+
+
+LEGACY_SCAN_FAILURE = ('Event scan could not finish. Check source connections, Calendar access and the selected '
+                       'Bot model. Unprocessed messages will be checked again.')
+CALENDAR_UNVERIFIED = ('Calendar could not be verified for duplicate checking. '
+                       'Check your Calendar connection before adding them.')
 
 
 class WatchStore:
@@ -125,11 +135,18 @@ class WatchStore:
         cfg = {'emails': emails, 'messages': messages, 'bot_id': bot_id,
                'interval_seconds': interval_seconds, 'since': old.get('since', time.time() - 86400)}
         if enabled:
-            context_bot(owner, bot_id, cfg, write=True)
+            bot = context_bot(owner, bot_id, cfg, scan_only=True)
             import bot_provider
-            bot_provider.resolve_bot_provider(owner, context_bot(owner, bot_id, cfg))
+            try:
+                bot_provider.resolve_bot_provider(owner, bot)
+            except bot_provider.BotProviderError:
+                raise ValueError('Set up the selected Bot in Bots, then save Event Review again.') from None
             cfg['binding'] = sources.binding(owner, emails, messages)
-            cfg['destination'] = destination(owner)
+            try:
+                context_bot(owner, bot_id, cfg)
+                cfg['destination'] = destination(owner)
+            except (ValueError, connectors.ConnectorError, OSError):
+                cfg['destination'] = None
         else:
             cfg['binding'] = old.get('binding', {})
             cfg['destination'] = old.get('destination', {})
@@ -140,22 +157,53 @@ class WatchStore:
                 (owner, uuid.uuid4().hex, int(enabled), connectors.seal_tokens(cfg), time.time()))
         return self.settings(owner)
 
-    def valid(self, owner, revision):
+    def enabled_settings(self, owner, revision):
         cfg = self.settings(owner)
         if not cfg['enabled'] or cfg['revision'] != revision:
-            raise ValueError('Event review was paused or its settings changed. Open a fresh review.')
+            raise ScanStopped('Event Review was paused or its settings changed.')
+        return cfg
+
+    def valid(self, owner, revision, source_kind=None):
+        cfg = self.enabled_settings(owner, revision)
         context_bot(owner, cfg['bot_id'], cfg)
-        sources.check(owner, cfg)
-        if destination(owner) != cfg['destination']:
+        if source_kind:
+            sources.check_source(owner, cfg, source_kind)
+        else:
+            sources.check(owner, cfg)
+        if not cfg['destination'] or destination(owner) != cfg['destination']:
             raise ValueError('Calendar account or destination changed. Save event review settings again.')
         return cfg
+
+    def scan_pending(self, owner):
+        with self.db() as db:
+            return bool(db.execute("""SELECT 1 FROM calendar_watch_settings AS settings
+                WHERE owner=? AND enabled=1 AND (next_scan<=? OR detail=? OR EXISTS (
+                    SELECT 1 FROM tasks WHERE chat_id=settings.owner AND executor_prefix='calendar_watch'
+                    AND status IN ('queued','running')))""", (owner, time.time(), LEGACY_SCAN_FAILURE)).fetchone())
+
+    def request_scan(self, owner):
+        now = time.time()
+        with self.db() as db:
+            changed = db.execute("""UPDATE calendar_watch_settings AS settings SET next_scan=min(next_scan,?)
+                WHERE owner=? AND enabled=1 AND NOT EXISTS (
+                    SELECT 1 FROM tasks WHERE chat_id=settings.owner AND executor_prefix='calendar_watch'
+                    AND status IN ('queued','running'))""", (now, owner)).rowcount
+            if not changed and not db.execute('SELECT 1 FROM calendar_watch_settings WHERE owner=? AND enabled=1',
+                                              (owner,)).fetchone():
+                raise ValueError('Enable and save Event Review before scanning.')
 
     def seen(self, owner, key):
         with self.db() as db:
             return db.execute('SELECT 1 FROM calendar_watch_seen WHERE owner=? AND source=?', (owner, key)).fetchone() is not None
 
     def observe(self, owner, revision, scanned, drafts, now):
-        cfg = self.valid(owner, revision)
+        cfg = self.enabled_settings(owner, revision)
+        context_bot(owner, cfg['bot_id'], cfg, scan_only=True)
+        # The read and inference can take time. Revalidate just the sources
+        # actually used so an unrelated disconnected source cannot block saving.
+        for kind in {source['ref']['kind'] for source in scanned}:
+            sources.check_source(owner, cfg, kind)
+        created = 0
         with self.db() as db:
             db.execute('BEGIN IMMEDIATE')
             current = db.execute('SELECT revision FROM calendar_watch_settings WHERE owner=? AND enabled=1', (owner,)).fetchone()
@@ -170,8 +218,8 @@ class WatchStore:
                 fingerprint = sources.digest(signature)
                 data = {**draft, 'source': source, 'settings_revision': revision,
                         'destination': cfg['destination'], 'detail': ''}
-                db.execute('INSERT OR IGNORE INTO calendar_suggestions VALUES (?,?,?,?,?,?,NULL,0,?)',
-                    (uuid.uuid4().hex, owner, fingerprint, uuid.uuid4().hex, 'pending', connectors.seal_tokens(data), now))
+                created += db.execute('INSERT OR IGNORE INTO calendar_suggestions VALUES (?,?,?,?,?,?,NULL,0,?)',
+                    (uuid.uuid4().hex, owner, fingerprint, uuid.uuid4().hex, 'pending', connectors.seal_tokens(data), now)).rowcount
                 if draft['kind'] in {'change', 'cancel'}:
                     # A later correction must not leave an earlier same-title
                     # create ready to approve. Blocking is conservative.
@@ -183,6 +231,7 @@ class WatchStore:
             for source in scanned:
                 db.execute('INSERT OR IGNORE INTO calendar_watch_seen VALUES (?,?,?)', (owner, source['key'], now))
             db.execute('DELETE FROM calendar_watch_seen WHERE created<?', (now - 30 * 86400,))
+        return created
 
     def rows(self, owner, *, active_only=False):
         with self.db() as db:
@@ -225,7 +274,7 @@ class WatchStore:
             task = self.tasks.get(row['task_id']) if row['task_id'] else None
             if row['state'] not in {'pending','reviewing'} or task and task['status'] in ACTIVE:
                 raise ValueError('Finish the current review before editing.')
-            cfg = self.valid(owner, self.settings(owner)['revision'])
+            cfg = self.valid(owner, self.settings(owner)['revision'], row['source']['ref']['kind'])
             data = connectors.unseal_tokens(row['data'])
             data.update(fields=fields, intent=intent, needs=[], settings_revision=cfg['revision'],
                         destination=cfg['destination'], detail='Details edited by you; review the saved event before approving.')
@@ -247,7 +296,7 @@ class WatchStore:
         row = self.get(owner, identity)
         if row['revision'] != revision: raise ValueError('The suggestion changed; reload it before reviewing.')
         if row['task_id'] and self.tasks.get(row['task_id']): return self.view(owner, identity)
-        cfg = self.valid(owner, row['settings_revision'])
+        cfg = self.valid(owner, row['settings_revision'], row['source']['ref']['kind'])
         if row['state'] not in {'pending','reviewing'} or row['kind'] != 'create' or row['needs'] or not row['intent']:
             raise ValueError('Complete the missing event details before opening a calendar review.')
         sources.reread(owner, cfg, row['source'])
@@ -295,9 +344,14 @@ def submit_due(tasks, now=None):
     now = time.time() if now is None else now
     store = WatchStore(tasks)
     with store.db() as db:
-        rows = db.execute('SELECT owner FROM calendar_watch_settings WHERE enabled=1 AND next_scan<=?', (now,)).fetchall()
+        # Retry a scan left failed by the previous implementation once after
+        # rollout. Its ordinary schedule takes over as soon as it is queued.
+        rows = db.execute('SELECT owner FROM calendar_watch_settings WHERE enabled=1 AND (next_scan<=? OR detail=?)',
+                          (now, LEGACY_SCAN_FAILURE)).fetchall()
     for row in rows:
         cfg = store.settings(row['owner'])
+        if not cfg['enabled'] or (cfg['next_scan'] > now and cfg['detail'] != LEGACY_SCAN_FAILURE):
+            continue
         # Do not fill the task queue while a previous scan is waiting/running.
         task_id = 'event-scan-' + sources.digest([cfg['owner'], cfg['revision'], cfg['next_scan']])
         with store.db() as db:
@@ -309,8 +363,9 @@ def submit_due(tasks, now=None):
                 conversation_id=None, task_id=task_id, resolve_bot=True)
         except DuplicateTaskId: pass
         with store.db() as db:
-            db.execute('UPDATE calendar_watch_settings SET next_scan=? WHERE owner=? AND revision=? AND next_scan=?',
-                (now + cfg['interval_seconds'], cfg['owner'], cfg['revision'], cfg['next_scan']))
+            db.execute("""UPDATE calendar_watch_settings SET next_scan=?,
+                detail=CASE WHEN detail=? THEN '' ELSE detail END WHERE owner=? AND revision=? AND next_scan=?""",
+                (now + cfg['interval_seconds'], LEGACY_SCAN_FAILURE, cfg['owner'], cfg['revision'], cfg['next_scan']))
 
 
 def pending_event(owner, row):
@@ -350,62 +405,111 @@ def run_scan(ctx, owner, text, task_id, send, *, on_result=None, on_progress=Non
     revision = json.loads(text)['revision']
     task = store.tasks.get(task_id) or {}
     def active():
-        if store.tasks.is_cancel_requested(task_id): raise ValueError('Event scan was cancelled.')
-        return store.valid(owner, revision)
+        if store.tasks.is_cancel_requested(task_id):
+            raise ScanStopped('Event scan was cancelled.')
+        return store.enabled_settings(owner, revision)
+
     now = time.time()
+    stage = 'settings'
     try:
-        cfg = store.valid(owner, revision)
+        cfg = active()
         if (task.get('status') != 'running' or task.get('chat_id') != owner
                 or task.get('bot_id') != cfg['bot_id'] or task.get('task_text') != text
                 or task.get('executor_prefix') != 'calendar_watch'
                 or ctx.bot_owner != owner or ctx.bot_id != cfg['bot_id']):
-            raise ValueError('Event scan task binding is unavailable.')
-        if on_progress: on_progress({'message':'Checking selected inboxes and synced phone messages for events.'})
+            raise ScanStopped('The scheduled scan no longer matches the saved Bot. Save Event Review settings again.')
+        try:
+            bot = context_bot(owner, cfg['bot_id'], cfg, scan_only=True)
+        except ValueError as exc:
+            raise ScanStopped(str(exc)) from None
+
+        stage = 'sources'
+        if on_progress:
+            on_progress({'message':'Checking selected inboxes and synced phone messages for events.'})
         found, notes = sources.collect(owner, cfg, lambda key: store.seen(owner, key), now)
         batch, scanned = [], []
+        characters = 0
         for source in found:
-            active()
-            if events.eventlike(source['text']):
-                if len(batch) >= 20:
-                    notes.append('More possible event messages remain; the next scan will continue checking them.')
-                    break
-                # Cap the one extraction call at 60k characters. Full original
-                # source/digest remains sealed for revalidation, not inference.
-                if sum(len(item['text']) for item in batch) + len(source['text']) > 60000:
+            content = source['text']
+            if events.eventlike(content):
+                if len(batch) >= 20 or characters + len(content) > 60000:
                     notes.append('More possible event messages remain for the next scan.')
                     break
                 batch.append(source)
+                characters += len(content)
             scanned.append(source)
-        drafts = asyncio.run(events.extract(owner, context_bot(owner, cfg['bot_id'], cfg), batch)) if batch else []
+
+        stage = 'extraction'
         active()
-        # An exact calendar match is already satisfied. Dismissed/event drafts
-        # are deduped separately by durable observation and event identities.
+        rejected = set()
+        drafts = asyncio.run(events.extract(owner, bot, batch, rejected)) if batch else []
+        if rejected:
+            scanned = [source for source in scanned if source['key'] not in rejected]
+            notes.append('Some messages could not be interpreted and will be retried.')
+
+        stage = 'calendar'
+        active()
+        can_compare = False
+        if any(draft['intent'] for _, draft in drafts):
+            try:
+                context_bot(owner, cfg['bot_id'], cfg)
+                can_compare = bool(cfg['destination'] and destination(owner) == cfg['destination'])
+            except (ValueError, connectors.ConnectorError, OSError):
+                pass
+            if not can_compare:
+                notes.append(CALENDAR_UNVERIFIED)
         filtered = []
         for source, draft in drafts:
-            active()
-            if draft['intent']:
-                _, matches = pending_event(owner, {**draft, 'destination':cfg['destination'], 'fingerprint':''})
-                if matches: continue
+            if can_compare and draft['intent']:
+                try:
+                    _, matches = pending_event(owner, {**draft, 'destination':cfg['destination'], 'fingerprint':''})
+                except (connectors.ConnectorError, OSError):
+                    can_compare = False
+                    notes.append(CALENDAR_UNVERIFIED)
+                else:
+                    if matches:
+                        continue
             filtered.append((source, draft))
-        store.observe(owner, revision, scanned, filtered, now)
-        # Replayable delivery to the existing notification outbox. An empty
-        # hourly scan produces no alert. Message excerpts never enter pushes.
+        stage = 'saving'
+        active()
+        created = store.observe(owner, revision, scanned, filtered, now)
+        # Replayable delivery. The same suggestion is announced once.
+        stage = 'notifications'
         from chat_notifications import NotificationStore
         for row in store.rows(owner):
             if row['state'] == 'pending':
                 NotificationStore().record(owner, 'calendar-suggestion:' + row['id'],
                     'automation', 'Calendar suggestion ready', conversation_id(owner))
-        detail = ' '.join(dict.fromkeys(notes)) or 'Selected sources checked.'
+        count_note = f'{created} new Calendar suggestion' + ('.' if created == 1 else 's.')
+        detail = ' '.join(dict.fromkeys([count_note, *notes]))
         with store.db() as db:
             db.execute('UPDATE calendar_watch_settings SET last_scan=?,detail=? WHERE owner=? AND revision=?', (now, detail, owner, revision))
         result = {'mode':'calendar_watch', 'status':'no_changes', 'count':len(filtered),
-                  'final_response': f'Event scan completed. {len(filtered)} candidate(s) checked. ' + detail}
-    except Exception:
+                  'final_response': 'Event scan completed. ' + detail}
+    except Exception as exc:
+        # Provider errors can include credentials or message content. Only
+        # workflow-authored diagnostics cross the settings/log boundary.
+        if isinstance(exc, (ScanStopped, sources.SourceUnavailable)):
+            detail = str(exc)
+        elif isinstance(exc, events.ExtractionError):
+            detail = str(exc)
+        else:
+            details = {
+                'settings': 'Saved Event Review settings could not be checked. Save them again.',
+                'sources': 'Selected sources could not be scanned. Check Connections.',
+                'extraction': 'Kyrex could not extract events with the selected Bot. Check its setup in Bots.',
+                'calendar': 'Calendar verification could not finish. Check Connections → Calendar.',
+                'saving': 'Event suggestions could not be saved. The scan will retry.',
+                'notifications': 'Suggestions were saved. Their notifications will be retried.',
+            }
+            detail = details[stage]
         with store.db() as db:
-            db.execute('UPDATE calendar_watch_settings SET detail=? WHERE owner=? AND revision=?',
-                ('Event scan could not finish. Check source connections, Calendar access and the selected Bot model. Unprocessed messages will be checked again.', owner, revision))
-        raise ValueError('Event scan could not finish. Check Event review settings for source coverage.') from None
-    if on_result: on_result(result)
+            db.execute('UPDATE calendar_watch_settings SET detail=? WHERE owner=? AND revision=? AND enabled=1',
+                       (detail, owner, revision))
+        raise ValueError(f'Event scan stopped during {stage}. {detail}') from None
+    if on_result:
+        on_result(result)
+    print(f'[calendar-watch] Scan completed. New suggestions: {created}.', flush=True)
     send(owner, result['final_response'])
 
 
@@ -417,7 +521,7 @@ def run_review(ctx, owner, text, task_id, cid, send, *, on_result=None,
     identity, revision = value['suggestion'], value['revision']
     def active():
         row = store.get(owner, identity)
-        cfg = store.valid(owner, row['settings_revision'])
+        cfg = store.valid(owner, row['settings_revision'], row['source']['ref']['kind'])
         task = store.tasks.get(task_id) or {}
         if (ctx.bot_owner != owner or ctx.bot_id != cfg['bot_id'] or row['revision'] != revision
                 or row['task_id'] != task_id or row['state'] != 'reviewing' or row['attempted']

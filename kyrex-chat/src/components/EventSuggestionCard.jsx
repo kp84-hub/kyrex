@@ -43,7 +43,8 @@ export default function EventSuggestionCard({ id, onResolved }) {
       <p>Source: {job.source.label}{job.source.received ? ` · ${new Date(job.source.received).toLocaleString()}` : ''}</p>
       <details><summary>Source evidence and coverage</summary><blockquote>{job.evidence}</blockquote><p>{job.source.coverage}</p>
         {job.source.synced_at && <p>Phone synced: {new Date(job.source.synced_at * 1000).toLocaleString()}</p>}</details>
-      <p>Calendar: {job.destination.calendar} · {job.destination.email}</p>
+      {job.destination ? <p>Calendar: {job.destination.calendar} · {job.destination.email}</p>
+        : <p>Connect Google Calendar, save Event Review settings again, then edit this suggestion to choose the saved calendar before approval.</p>}
       {job.needs.length > 0 && <p>Needs attention: {job.needs.join(', ')}.</p>}
       {job.kind !== 'create' && <p>This {job.kind === 'cancel' ? 'cancellation' : 'schedule change'} needs a review of the existing calendar event. Open Calendar to update it.</p>}
       {job.detail && <p role="status">{job.detail}</p>}
@@ -59,7 +60,7 @@ export default function EventSuggestionCard({ id, onResolved }) {
       </div>}
       {!editing && job.state === 'pending' && <div className="approval-actions">
         {job.kind === 'create' && <>
-          <button type="button" disabled={busy || job.needs.length > 0} onClick={() => action('review')}>Review calendar event</button>
+          <button type="button" disabled={busy || !job.destination || job.needs.length > 0} onClick={() => action('review')}>Review calendar event</button>
           {job.can_edit && <button type="button" disabled={busy} onClick={() => setEditing(true)}>Edit</button>}
         </>}
         <button type="button" disabled={busy} onClick={() => action('dismiss')}>Dismiss</button>
