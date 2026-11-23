@@ -1,7 +1,7 @@
 """Offline event discovery, owner isolation, durable reviews and write boundaries."""
 import asyncio
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import threading
 import time
@@ -14,12 +14,16 @@ import pytest
 import bots
 import bot_provider
 import cal_writer
+import calendar_briefing as briefing
+import calendar_briefing_api as briefing_api
 import calendar_watch as watch
 import calendar_watch_events as events
 import calendar_watch_sources as sources
 import calendar_watch_api as api
+import chat_notifications
 import chat_service
 import connectors
+import notification_api
 import serve
 import task_store
 from task_store import CloudTaskStore, TaskWorker
@@ -406,3 +410,169 @@ def test_pause_expires_prepared_reviews_and_all_day_duplicates_are_skipped(f):
     assert watch.pending_event('alice',row)[1] == [event]
     f.store.configure('alice',enabled=False,emails=True,messages=True,bot_id='assistant',interval_seconds=3600)
     with pytest.raises(ValueError,match='paused'): f.store.review('alice',identity,row['revision'])
+
+
+def briefing_time(day, hour, minute=0):
+    return datetime(2026, 11, day, hour, minute, tzinfo=briefing.TZ)
+
+
+def briefing_event(title, start, *, location='', recurring=False):
+    return {'title': title, 'start': start.timestamp(), 'end': (start + timedelta(hours=1)).timestamp(),
+            'all_day': False, 'location': location, 'recurring': recurring, 'link': ''}
+
+
+def test_baseline_quiet_hours_and_morning_replay():
+    tomorrow = briefing_time(24, 9)
+    appointment = briefing_event('Appointment', tomorrow)
+    routine = briefing_event('Regular class', briefing_time(24, 14), recurring=True)
+    options = briefing.DEFAULTS
+    end = briefing_time(30, 0).timestamp()
+    state, notice = briefing.reconcile(options, {}, {'a': appointment, 'routine': routine}, end, briefing_time(23, 6))
+    assert notice is None
+    moved = briefing_event('Appointment', briefing_time(24, 14, 30), location='Room A')
+    added = briefing_event('School event', briefing_time(23, 12))
+    state, notice = briefing.reconcile(options, state,
+        {'a': moved, 'b': added, 'routine': routine}, end, briefing_time(23, 6, 45))
+    assert not notice and set(state['pending']) == {'a', 'b'}
+    state, notice = briefing.reconcile(options, state,
+        {'a': moved, 'b': added, 'routine': routine}, end, briefing_time(23, 7))
+    day, title, body = notice
+    assert day == '2026-11-23' and title == 'Calendar briefing'
+    assert 'Moved from' in body and 'Location changed to Room A' in body and 'overlaps Regular class' in body
+    assert body.count('**Calendar changes**') == 1 and '**Today**' in body and '**Coming up**' in body
+    state, notice = briefing.reconcile(options, state,
+        {'a': moved, 'b': added, 'routine': routine}, end, briefing_time(23, 7, 15))
+    assert notice is None
+    state, notice = briefing.reconcile(options, state,
+        {'a': None, 'routine': routine}, end, briefing_time(23, 7, 30))
+    assert 'Canceled: Appointment' in notice[2]
+    assert 'No longer listed' in notice[2]
+
+
+def test_quiet_change_reverted_and_new_horizon_remain_quiet():
+    original = briefing_event('Appointment', briefing_time(24, 10))
+    changed = briefing_event('Appointment', briefing_time(24, 11))
+    boundary = briefing_time(24, 14).timestamp()
+    later = briefing_event('Known outside previous window', briefing_time(24, 15))
+    opts = briefing.DEFAULTS
+    state, _ = briefing.reconcile(opts, {}, {'a': original}, boundary, briefing_time(23, 22))
+    state, notice = briefing.reconcile(opts, state, {'a': changed}, boundary, briefing_time(23, 23))
+    assert notice is None
+    state, notice = briefing.reconcile(opts, state,
+        {'a': original, 'later': later}, briefing_time(30, 0).timestamp(), briefing_time(24, 7))
+    assert '**Calendar changes**' not in notice[2]
+
+
+def test_calendar_read_pages_and_safe_links(monkeypatch):
+    class Store:
+        def route_capability(self, owner, cap, provider):
+            assert (owner, cap, provider) == ('alice', 'calendar.read', 'google')
+
+        def access_token(self, owner, provider):
+            return 'fixture'
+
+    pages = [
+        {'items': [
+            {'id': 'live', 'summary': 'Open house', 'description': 'Private body',
+             'htmlLink': 'https://www.google.com/calendar/event?eid=event_id',
+             'location': 'Room B'}], 'nextPageToken': 'page-2'},
+        {'items': [{'id': 'gone', 'status': 'cancelled',
+                    'htmlLink': 'https://calendar.google.com.evil.test/calendar/event?eid=abc'}]},
+    ]
+
+    def transport(method, url, token, params):
+        assert method == 'GET' and token == 'fixture'
+        assert '/calendars/family/events' in url
+        assert params['showDeleted'] == 'true' and 'description' not in params['fields']
+        return pages.pop(0)
+
+    conn = connectors.CalendarRead(Store(), 'alice', transport=transport)
+    first, second = conn.events(calendar_id='family', briefing=True)
+    assert not pages
+    assert first['location'] == 'Room B' and first['link'] == 'https://calendar.google.com/calendar/event?eid=event_id'
+    assert 'description' not in first and not second['link'] and second['status'] == 'cancelled'
+    monkeypatch.setattr(conn, '_transport', lambda *a, **kw: {'items': [], 'nextPageToken': 'unchanged'})
+    with pytest.raises(connectors.ConnectorUnavailable, match='incomplete'):
+        conn.events(calendar_id='family', briefing=True)
+
+
+@pytest.fixture
+def briefing_setup(monkeypatch, tmp_path):
+    monkeypatch.setenv('KYREX_DATA_DIR', str(tmp_path))
+    monkeypatch.setenv('WEB_SESSION_SECRET', 'calendar-briefing-test-fixture')
+    monkeypatch.setattr(task_store, 'DATA_DIR', tmp_path)
+    tasks = CloudTaskStore()
+    monkeypatch.setattr(chat_service, '_task_store', lambda: tasks)
+    monkeypatch.setattr(chat_service, '_chat_root', lambda: tmp_path / 'chat')
+    registry = {'coord': {'id': 'coord', 'owner': 'alice', 'status': 'running',
+                          'name': 'The Overwatcher', 'policy': serve.COORDINATOR_PRESET, 'rift': str(tmp_path)}}
+    monkeypatch.setattr(bots, 'load_bots', lambda: registry)
+    monkeypatch.setattr(bots, 'get_bot', registry.get)
+    monkeypatch.setattr(briefing, 'connection_revision', lambda owner: 123)
+    conn = connectors.default_store()
+    monkeypatch.setattr(connectors, 'default_store', lambda: conn)
+    monkeypatch.setattr(conn, 'list_calendars', lambda owner: [{'id': 'family', 'summary': 'Family'}])
+    return tasks
+
+
+def test_worker_to_existing_overwatcher_and_notification(briefing_setup, monkeypatch):
+    tasks = briefing_setup
+    store = briefing.BriefingStore(tasks)
+    cfg = dict(briefing.DEFAULTS, enabled=True, calendars=['family'], quiet_from='00:00',
+               quiet_until='00:00', briefing_at='00:00')
+    cid = chat_service.open_bot_conversation('alice', 'coord')['conversation_id']
+    store.configure('alice', cfg)
+    monkeypatch.setattr(briefing, 'read_events', lambda owner, cfg, now: (
+        {'e': briefing_event('School appointment', now + timedelta(hours=1))},
+        (now + timedelta(days=8)).timestamp(),
+    ))
+    now = time.time()
+    briefing.submit_due(tasks, now)
+    briefing.submit_due(tasks, now)
+    queued = tasks.claim_next('briefing-fixture')
+    assert queued['job_contract']['allowed_actions'] == ['calendar.read']
+    TaskWorker(tasks, executor=serve.run_task).execute_task(queued)
+    assert tasks.get(queued['task_id'])['status'] == 'done', tasks.get(queued['task_id'])
+    pending = store.pending(time.time())
+    assert len(pending) == 1 and 'School appointment' not in pending[0]['body']
+    inbox = chat_notifications.NotificationStore()
+    observer = notification_api.NotificationService(tasks, chat_service, store=inbox, sender=lambda *args: pytest.fail('Unexpected push'))
+    observer.calendar_briefings()
+    assert not store.pending(time.time())
+    saved = inbox.list('alice')['notifications']
+    assert len(saved) == 1 and saved[0]['conversation'] == cid and saved[0]['title'] == 'Calendar briefing'
+    assert inbox.list('bob')['unread'] == 0
+    assert chat_service.publish_calendar_briefing('alice', pending[0], store) == cid
+    messages = chat_service.get_conversation('alice', cid)['messages']
+    assert len(messages) == 1 and 'School appointment' in messages[0]['content']
+    assert 'School appointment' not in messages[0]['model_content']
+    store.configure('alice', cfg | {'enabled': False})
+    with pytest.raises(ValueError, match='settings changed'):
+        chat_service.publish_calendar_briefing('alice', pending[0], store)
+
+
+def test_api_starts_disabled_binds_selected_calendars_and_rejects_account_switch(briefing_setup, monkeypatch):
+    app = FastAPI()
+    app.include_router(briefing_api.router)
+
+    def authenticated(request, mutation=False):
+        if not request.headers.get('x-fixture'):
+            raise HTTPException(401)
+        return request.headers['x-fixture']
+
+    monkeypatch.setattr(briefing_api, 'inbox_owner', authenticated)
+    client = TestClient(app)
+    path = '/api/automations/calendar-briefing'
+    assert client.get(path).status_code == 401
+    headers = {'x-fixture': 'alice'}
+    initial = client.get(path, headers=headers).json()['settings']
+    assert initial == briefing.DEFAULTS
+    enabled = initial | {'enabled': True, 'calendars': ['family']}
+    assert client.put(path, headers=headers, json=enabled | {'calendars': ['other']}).status_code == 422
+    assert client.put(path, headers=headers, json=enabled).json()['settings'] == enabled
+    assert client.get(path, headers={'x-fixture': 'bob'}).json()['settings'] == initial
+    store = briefing.BriefingStore(briefing_setup)
+    revision = store.settings('alice')['revision']
+    monkeypatch.setattr(briefing, 'connection_revision', lambda owner: 456)
+    with pytest.raises(ValueError, match='Google connection changed'):
+        store.current('alice', revision)

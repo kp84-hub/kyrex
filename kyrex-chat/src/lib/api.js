@@ -92,6 +92,13 @@ export async function listEmailAutomationRules() {
   return data;
 }
 
+export async function calendarBriefingRequest(method = 'GET', payload) {
+  return handle(await fetch(`${BASE}/automations/calendar-briefing`, {
+    method, cache: 'no-store',
+    ...(payload === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  }));
+}
+
 export async function eventReviewRequest(path = '', method = 'GET', payload) {
   return handle(await fetch(`${BASE}/automations/calendar-events${path}`, {
     method, cache: 'no-store',

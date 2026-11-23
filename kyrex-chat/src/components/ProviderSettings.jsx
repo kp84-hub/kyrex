@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import InstallApp from './InstallApp.jsx';
 import EmailAutomationSettings from './EmailAutomationSettings.jsx';
 import TrainerMonitorSettings from './TrainerMonitorSettings.jsx';
+import CalendarBriefingSettings from './CalendarBriefingSettings.jsx';
 import EventReviewSettings from './EventReviewSettings.jsx';
 import BudgetSettings from './BudgetSettings.jsx';
 import { GmailCleanupSettings } from './GmailCleanup.jsx';
@@ -111,6 +112,7 @@ export default function ProviderSettings({ onClose, onSaved, installState, onOpe
       <FamilySettings profiles={profiles} />
       <PrivacySettings />
       <EmailAutomationSettings />
+      <CalendarBriefingSettings />
       <EventReviewSettings onOpenConversation={onOpenConversation} />
       <BudgetSettings profiles={profiles} onOpenConversation={onOpenConversation} onSaved={onSaved} />
       <GmailCleanupSettings />

@@ -359,6 +359,22 @@ class NotificationService:
                 # Retry saved publication later; never replay the group send.
                 continue
 
+    def calendar_briefings(self):
+        from calendar_briefing import BriefingStore
+        briefs = BriefingStore(self.tasks)
+        for row in briefs.pending(time.time()):
+            user = row['owner']
+            try:
+                cid = self.chat.publish_calendar_briefing(user, row, briefs)
+                if cid is None:
+                    continue  # Quiet hours may have started before publication.
+                source = f"calendar-briefing:{row['revision']}:{row['identity']}"
+                self.store.record(user, source, 'automation', row['title'], cid)
+                self.store.relink(user, source, cid)
+                briefs.complete(row)
+            except (OSError, ValueError, self.chat.BotUnavailable):
+                continue  # Preserve the saved notice for a bounded retry.
+
     def reviewed_calendar_alerts(self):
         # Repair old alerts and interrupted cleanup before push delivery. Only
         # the saved owner-bound outcome can retire an alert, never a mere read.
@@ -387,6 +403,11 @@ class NotificationService:
             self.reviewed_calendar_alerts()
         except (OSError, sqlite3.Error, ValueError):
             log.error('Reviewed Calendar alerts could not be reconciled; cleanup will retry.')
+        if time.time() >= self.next_review_scan:
+            try:
+                self.calendar_briefings()
+            except (OSError, sqlite3.Error, ValueError):
+                log.error('Calendar briefing publication could not be checked; saved notices will retry.')
         self.reviewed_task_alerts()
         if time.time() >= self.next_review_scan:
             try:

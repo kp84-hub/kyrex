@@ -31,6 +31,14 @@ def contract_for_task(executor_prefix, task_text):
     text = str(task_text or "").strip()
     if prefix == 'crypto_paper':
         raise JobContractError('Crypto paper trading has been retired.')
+    if prefix == 'calendar_briefing':
+        from calendar_briefing import revision_from
+        try:
+            revision_from(text)
+        except ValueError:
+            raise JobContractError('Calendar briefing requires saved owner settings.') from None
+        return _contract(prefix, text, 'google_calendar', 'read', 'calendar_briefing',
+                         ('calendar.read',), 'calendar_briefing')
     if prefix == 'calendar_watch':
         try:
             value = json.loads(text)
