@@ -20,7 +20,8 @@ type Workspace struct {
 	Source  string // absolute path to the original project
 	Backend string // "reflink" or "copy"
 	Created time.Time
-	// Persistent workspaces belong to a Bot and are never swept or discarded.
+	// Persistent workspaces belong to a Bot or protect unapplied local work;
+	// neither may be swept or discarded automatically.
 	// The authority is the on-disk marker, not this field: the startup sweep
 	// runs with directory paths and no Workspace values, so persistence has to
 	// be visible on disk or the sweep cannot honour it.
@@ -37,9 +38,8 @@ func IsPersistent(root string) bool {
 	return err == nil
 }
 
-// MarkPersistent makes a workspace durable: exempt from Discard and from the
-// startup sweep. Used for Bot workspaces, whose whole value is surviving the
-// runtime that created them.
+// MarkPersistent protects a Bot workspace or a recovery draft from Discard
+// and startup sweeping.
 func MarkPersistent(ws *Workspace) error {
 	if ws == nil || ws.Root == "" {
 		return fmt.Errorf("rift: cannot mark a nil workspace persistent")
@@ -114,6 +114,10 @@ func (m *Manager) Create(source, name string) (*Workspace, error) {
 		_ = os.RemoveAll(root)
 		return nil, fmt.Errorf("rift: clone failed (%s backend): %w", backend.Name(), err)
 	}
+	if err := PinBaseline(root); err != nil {
+		_ = os.RemoveAll(root)
+		return nil, err
+	}
 
 	// A clone that copies nothing is the worst failure mode: the engine starts
 	// in an empty workspace, finds no config, and silently loads no model.
@@ -147,6 +151,34 @@ func (m *Manager) Diff(ws *Workspace) (string, error) {
 	return Diff(ws.Root)
 }
 
+// UnmergedChanges verifies the actual project files instead of trusting a
+// prior approval flag or the clone's current HEAD. A second edit to a file
+// already approved must be reviewed again if those new bytes did not land.
+func (m *Manager) UnmergedChanges(ws *Workspace) ([]Change, error) {
+	changes, err := m.Changes(ws)
+	if err != nil {
+		return nil, err
+	}
+	var pending []Change
+	for _, change := range changes {
+		rel := cleanRel(change.Path)
+		if rel == "." || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return nil, fmt.Errorf("rift: refusing change outside workspace: %q", change.Path)
+		}
+		src := filepath.Join(ws.Root, rel)
+		dst := filepath.Join(ws.Source, rel)
+		if change.Kind == Deleted {
+			if _, err := os.Lstat(dst); os.IsNotExist(err) {
+				continue
+			}
+		} else if err := verifyCopy(src, dst); err == nil {
+			continue
+		}
+		pending = append(pending, change)
+	}
+	return pending, nil
+}
+
 // MergeBack applies the workspace's changes onto the original source. Approve
 // path. Modified/added/untracked files are copied back; deletions are applied.
 // Returns the list of changes that were merged.
@@ -154,7 +186,7 @@ func (m *Manager) MergeBack(ws *Workspace) ([]Change, error) {
 	if fi, err := os.Stat(ws.Source); err != nil || !fi.IsDir() {
 		return nil, fmt.Errorf("rift: merge target %q is not a directory", ws.Source)
 	}
-	changes, err := m.Changes(ws)
+	changes, err := m.UnmergedChanges(ws)
 	if err != nil {
 		return nil, err
 	}

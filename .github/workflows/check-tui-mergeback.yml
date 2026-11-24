@@ -1,0 +1,31 @@
+name: Check TUI merge-back
+
+on:
+  pull_request:
+    paths:
+      - 'internal/**'
+      - 'tui/**'
+      - '*.go'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/check-tui-mergeback.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mergeback:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test real Rift commits, approvals and project-file recovery
+        run: go test ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Build
+        run: go build ./...

@@ -522,7 +522,7 @@ func (m Model) handleChatDone(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 //
 // Only edit_file and write_file_with_gate route through the confirm gate.
 // Anything run_command writes to disk produces no diff, never calls
-// MergeFile, and is discarded with the clone. Asking git what changed is
+// MergeFile, and needs fallback review. Asking git what changed is
 // agnostic to which tool changed it.
 //
 // This reports even when auto-approve is on: auto-approve means "do not make
@@ -533,18 +533,17 @@ func (m *Model) detectUnmergedChanges() bool {
 		return false
 	}
 
-	changes, err := m.WorkspaceMgr.Changes(m.Workspace)
+	changes, err := m.WorkspaceMgr.UnmergedChanges(m.Workspace)
 	if err != nil {
-		// Changes() needs a git repo. Warn once per session rather than every
-		// turn, but do not go quiet: in a non-git project, shell-written edits
-		// vanish with the clone and the operator has no way to know.
+		// Warn once per session rather than every turn. Cleanup retains the
+		// workspace when verification fails, including non-Git projects.
 		if m.SweepWarned {
 			return false
 		}
 		m.SweepWarned = true
 		m.History = append(m.History,
-			"\u26a0  Cannot inspect clone changes (not a git repo). Edits made "+
-				"outside the approval gate will be lost when the clone is discarded.")
+			"\u26a0  Cannot verify clone changes: "+err.Error()+
+				". The recovery workspace will be retained on exit.")
 		return true
 	}
 	// Reset the warning here, not in the empty-changes branch: a repo that
@@ -558,11 +557,12 @@ func (m *Model) detectUnmergedChanges() bool {
 		return false
 	}
 
-	// Drop anything that was already dirty before the session started, and
-	// anything the live gate already resolved (so it is never re-presented).
+	// Protect work that was already dirty before the session started. The
+	// manager has removed paths whose current bytes already reached the source;
+	// a prior approval alone cannot hide a later committed edit to that path.
 	fresh := changes[:0:0]
 	for _, c := range changes {
-		if !m.SweepBaseline[c.Path] && !m._handledChanges[c.Path] {
+		if !m.SweepBaseline[c.Path] {
 			fresh = append(fresh, c)
 		}
 	}
@@ -634,7 +634,7 @@ func (m *Model) presentSweepCard(changes []rift.Change) {
 	}
 	m.History = append(m.History, fmt.Sprintf(
 		"\u26a0  %d change(s) above bypassed the diff gate (run_command writes "+
-			"to disk directly). Press y to merge into the project, n to discard.",
+			"to disk directly). Press y to merge into the project, n to leave unmerged.",
 		len(changes)))
 	m._sweepCardStart = start
 	m._sweepCardEnd = len(m.History)
