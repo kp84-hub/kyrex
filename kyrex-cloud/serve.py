@@ -1223,6 +1223,7 @@ OPERATION_TIERS: dict[str, int] = {
     "mail:trash": 1,
     "budget:read": 0,
     "maps:read": 0,
+    "web:search": 0,
     "mcp:read": 0,
     "fitness:read": 0,
     "vision:read": 0,

@@ -76,7 +76,7 @@ def git_diff(repo_dir: Path) -> str:
         return f"[git diff failed: {e.stderr.strip()}]"
 
 
-HOST_TOOL_GATES = frozenset({'github_read', 'fitness_read', 'fitness_profile',
+HOST_TOOL_GATES = frozenset({'web_search', 'github_read', 'fitness_read', 'fitness_profile',
                              'delegation', 'delegation_status', 'remove_tracked_files'})
 
 

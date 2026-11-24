@@ -141,6 +141,10 @@ jobs:
           kyrex-cloud/test_github_connection.py
           kyrex-cloud/test_github_app.py
           kyrex-cloud/web/backend/test_github_chat.py
+      - name: Check encrypted API search, owner isolation and host mediation
+        run: >-
+          python -m pytest --confcutdir=kyrex-cloud/web/backend -q
+          kyrex-cloud/web/backend/test_web_search.py
       - name: Check connected developer checkout and reviewed PR publishing
         run: >-
           python -m pytest --confcutdir=kyrex-cloud/web/backend -q

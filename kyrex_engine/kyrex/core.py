@@ -669,7 +669,9 @@ class PlaneExecute:
     def _get_all_tools_schema(self):
         schemas = []
         for name, cfg in BUILTIN_TOOLS.items():
-            if name in ("github_read", "fitness_read", "fitness_profile", "email_draft", "mcp_read", "maps_route", "budget_read") and os.environ.get("KYREX_SURFACE") != "Kyrex Chat":
+            if name == 'web_search' and 'web_search' not in (_allowed_tool_names() or set()):
+                continue  # Only the authenticated Chat host can grant API search.
+            if name in ("web_search", "github_read", "fitness_read", "fitness_profile", "email_draft", "mcp_read", "maps_route", "budget_read") and os.environ.get("KYREX_SURFACE") != "Kyrex Chat":
                 continue  # GitHub credentials are mediated by the Chat host only.
             if name == "task_complete" and os.environ.get("KYREX_SURFACE") == "Kyrex Chat":
                 cfg = {**cfg, "parameters": {**cfg["parameters"],
