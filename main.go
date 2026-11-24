@@ -124,7 +124,22 @@ var cleanupOnce sync.Once
 func discardWorkspace(mgr *rift.Manager, ws *rift.Workspace) {
 	cleanupOnce.Do(func() {
 		if mgr != nil && ws != nil && ws.Root != ws.Source {
-			_ = mgr.Discard(ws)
+			if rift.IsPersistent(ws.Root) {
+				return
+			}
+			pending, err := mgr.UnmergedChanges(ws)
+			if err != nil || len(pending) > 0 {
+				// Keep the existing durability marker so startup sweeping cannot
+				// later remove a draft whose changes never reached the project.
+				if markErr := rift.MarkPersistent(ws); markErr != nil {
+					fmt.Fprintf(os.Stderr, "rift: could not protect recovery workspace %s: %v\n", ws.Root, markErr)
+				}
+				fmt.Fprintf(os.Stderr, "rift: retained recovery workspace %s; project files are not fully synchronized\n", ws.Root)
+				return
+			}
+			if err := mgr.Discard(ws); err != nil {
+				fmt.Fprintf(os.Stderr, "rift: workspace cleanup failed: %v\n", err)
+			}
 		}
 	})
 }

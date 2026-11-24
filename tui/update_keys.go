@@ -916,7 +916,7 @@ func (m Model) handleConfirmKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 }
 
 // handleSweepKey handles y/n input for the sweep merge confirmation prompt.
-// y/Y merges changes back; n/N discards them. Any other key is unhandled.
+// y/Y merges changes back; n/N leaves them in the recovery workspace.
 func (m Model) handleSweepKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 	switch msg.String() {
 	case "y", "Y":
@@ -942,7 +942,7 @@ func (m Model) handleSweepKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 				"✅  Sweep merged %d change(s) into project.", merged))
 		}
 	case "n", "N":
-		m.History = append(m.History, "Sweep: changes left unmerged, will be discarded with the clone.")
+		m.History = append(m.History, "Sweep: changes left unmerged; the recovery workspace will be retained on exit.")
 	default:
 		return m, nil, false
 	}
@@ -2051,8 +2051,8 @@ func (m Model) settleCommandWrite(approved bool) Model {
 	return m.clearConfirmState()
 }
 
-// markHandled records clone-relative paths the live gate already resolved, so
-// the end-of-turn sweep does not re-present them.
+// markHandled records clone-relative paths resolved by the live gate. A prior
+// decision alone is not proof that the current bytes reached the project.
 func (m Model) markHandled(paths ...string) Model {
 	if m._handledChanges == nil {
 		m._handledChanges = map[string]bool{}

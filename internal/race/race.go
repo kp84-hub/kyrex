@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/kp84-hub/kx/internal/rift"
 )
 
 // CloneExcludes lists directory patterns excluded from workspace clones via
@@ -200,8 +202,12 @@ func (l *Lane) Spawn(engineCmd []string, logDir string) error {
 	env = setEnvValue(env, "WORKSPACE_ROOT", l.Dir)
 	env = setEnvValue(env, "PROJECT_SOURCE_ROOT", l.Dir)
 	env = setEnvValue(env, "KYREX_MODEL", l.Model)
-	if l.Provider != "" { env = setEnvValue(env, "KYREX_PROVIDER", l.Provider) }
-	if l.BaseURL != "" { env = setEnvValue(env, "KYREX_BASE_URL", l.BaseURL) }
+	if l.Provider != "" {
+		env = setEnvValue(env, "KYREX_PROVIDER", l.Provider)
+	}
+	if l.BaseURL != "" {
+		env = setEnvValue(env, "KYREX_BASE_URL", l.BaseURL)
+	}
 	cmd.Env = env
 
 	// Stderr -> log file
@@ -314,11 +320,11 @@ func (l *Lane) readLoop(stdout io.ReadCloser, stdin io.WriteCloser, send func(ms
 type Race struct {
 	Task      string
 	SrcDir    string
-	Dir       string      // parent directory containing all lane-<i> clones
-	Lanes     []*Lane     // one per model, populated after New
+	Dir       string  // parent directory containing all lane-<i> clones
+	Lanes     []*Lane // one per model, populated after New
 	StartedAt time.Time
-	RoundCap  int         // max rounds per lane, default 25
-	CloneSecs []float64   // per-lane clone duration in seconds
+	RoundCap  int       // max rounds per lane, default 25
+	CloneSecs []float64 // per-lane clone duration in seconds
 }
 
 // New creates a Race by cloning srcDir once per model in parallel into
@@ -346,9 +352,9 @@ func New(task, srcDir, baseDir string, models []string) (*Race, error) {
 	}
 
 	var (
-		wg     sync.WaitGroup
-		mu     sync.Mutex
-		first  error
+		wg    sync.WaitGroup
+		mu    sync.Mutex
+		first error
 	)
 
 	for i, model := range models {
@@ -399,6 +405,9 @@ func (r *Race) cloneLane(i int, model, srcDir, baseDir string) error {
 	}
 	if err := cloneDir(srcDir, laneDir); err != nil {
 		return fmt.Errorf("lane %d: clone failed: %w", i, err)
+	}
+	if err := rift.PinBaseline(laneDir); err != nil {
+		return fmt.Errorf("lane %d: cannot record starting tree: %w", i, err)
 	}
 
 	// Write .kx-lane marker

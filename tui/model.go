@@ -383,10 +383,8 @@ type Model struct {
 	SweepWarned   bool
 	SweepChanges  []rift.Change
 	ConfirmType   string // "" = edit (side-by-side diff), "deletion" = single-box proposal
-	// Clone-relative paths the live gate already resolved (merged command
-	// writes / approved edits). The end-of-turn sweep skips them so it stays a
-	// fallback for genuinely unexpected/stale writes, never re-reporting a
-	// decision the operator already made. Reset by /new.
+	// Clone-relative paths the live gate already resolved. Destination bytes,
+	// rather than this historical flag, decide what still needs merging.
 	_handledChanges map[string]bool
 
 	// Execution Timeline
