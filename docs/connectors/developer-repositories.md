@@ -23,6 +23,29 @@ unverified checkout is read-only. From a clean checkout, tell Developer Bot
 This creates a fresh branch and keeps the previous one. Save or review any
 uncommitted files before switching.
 
+You can also say **Start from latest main, then fix the parser**. The host
+performs the same freshness and dirty-file checks, creates the fresh branch
+while retaining the old one, and passes the remaining request to Developer
+Bot. This does not select a different repository or grant publication. A
+question about starting from main is not a branch-switch instruction.
+
+Before the Chat engine starts, it receives the current selected local
+repository, checkout write permission and command-runtime readiness. Remote
+GitHub source access, local editing, shell execution and reviewed PR publishing
+are separate capabilities. A GitHub reader being read-only does not prevent
+edits in a writable checkout. When a read-only checkout has no functioning
+Bubblewrap sandbox, the host removes `run_command` from that turn's tool
+allowlist instead of inviting repeated failures. File readers and permitted
+GitHub source reads remain available. Command prerequisites are not evidence
+that a test, build, publication or deployment succeeded.
+
+The sandbox probe mounts a read-only filesystem before executing its fixed
+shell no-op; an empty Bubblewrap root cannot find the shell. Hosts that deny
+the required namespaces remain blocked for read-only commands. This update
+does not enable namespaces, bypass sandbox enforcement, migrate existing dirty
+work, or certify the deployed host's runtime. Writable execution retains its
+existing credential-scrubbed fallback when sandboxing is unavailable.
+
 When a change calls for removing tracked files, Developer Bot can show an
 approval for the exact paths in Chat. It checks the files again after approval
 and leaves the deletion in the local diff for review. Files with local edits,

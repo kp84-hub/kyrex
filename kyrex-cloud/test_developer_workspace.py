@@ -181,7 +181,8 @@ def test_developer_commentary_is_bounded_and_pretool_only():
 def test_progress_distinguishes_recovery_without_exposing_tool_payloads():
     from developer_updates import tool_stage
     for kind, expected in [('command_timeout', 'time limit'), ('file_not_found', 'not found'),
-                           ('invalid_arguments', 'arguments'), ('terminal_confirmation', 'terminal confirmation')]:
+                           ('invalid_arguments', 'arguments'), ('terminal_confirmation', 'terminal confirmation'),
+                           ('sandbox_unavailable', 'host sandbox')]:
         stage = tool_stage({'type': 'tool_result', 'name': 'run_command',
             'result': {'error_type': kind, 'error': 'SECRET /private/token.txt', 'output': 'PRIVATE'}})
         assert expected in stage
@@ -205,6 +206,64 @@ def test_headless_marks_its_engine_environment_without_disabling_edit_protocol(t
     assert captured[0]['KYREX_HEADLESS'] == '1'
     assert captured[0]['KYREX_VSCODE'] == '1'
     assert captured[0]['WORKSPACE_ROOT'] == str(tmp_path)
+
+
+@pytest.mark.parametrize('read_only,sandboxed,command_allowed', [
+    (True, False, False), (True, True, True), (False, False, True), (False, True, True),
+])
+def test_headless_reports_real_command_readiness_without_confusing_remote_access(
+        tmp_path, monkeypatch, read_only, sandboxed, command_allowed):
+    import headless_agent
+    import threading
+    import kyrex.toolbox as toolbox
+    captured = []
+    monkeypatch.setattr(toolbox, '_bwrap_functional', lambda *a: sandboxed)
+    monkeypatch.delenv('KYREX_READ_ONLY_REPO', raising=False)
+    monkeypatch.delenv('KYREX_ALLOWED_TOOLS', raising=False)
+    monkeypatch.setenv('GITHUB_TOKEN', 'private-host-reader')
+    monkeypatch.setenv('GH_TOKEN', 'private-host-writer')
+    monkeypatch.setenv('KYREX_CHAT_SYSTEM_PROMPT', 'Bot identity')
+    agent = headless_agent.HeadlessAgent(tmp_path / 'bridge.py', tmp_path,
+                                      read_only=read_only, surface='Kyrex Chat')
+    agent.out_q.put(('stdout', '{"type":"phase","value":"IDLE"}'))
+    monkeypatch.setattr(headless_agent.subprocess, 'Popen', lambda *a, **k: captured.append(k['env']) or SimpleNamespace())
+    monkeypatch.setattr(threading.Thread, 'start', lambda *a: None)
+    monkeypatch.setattr(agent, '_send', lambda *a: None)
+    assert agent.start('Check this code')
+    env = captured[0]
+    assert agent.command_runtime['available'] is command_allowed
+    if read_only:
+        allowed = env['KYREX_ALLOWED_TOOLS'].split(',')
+        assert ('run_command' in allowed) is command_allowed
+        assert 'github_read' in allowed and 'read_local_file' in allowed
+        assert 'edit_file' not in allowed
+        assert not env.get('GITHUB_TOKEN') and not env.get('GH_TOKEN')
+    else:
+        assert 'KYREX_ALLOWED_TOOLS' not in env
+        assert 'local checkout is writable' in env['KYREX_CHAT_SYSTEM_PROMPT']
+    assert env['KYREX_CHAT_SYSTEM_PROMPT'].startswith('Bot identity')
+    assert 'private-host' not in env['KYREX_CHAT_SYSTEM_PROMPT']
+
+
+def test_readiness_filter_does_not_expand_an_existing_tool_allowlist(tmp_path, monkeypatch):
+    import headless_agent
+    import threading
+    import kyrex.toolbox as toolbox
+    monkeypatch.setattr(toolbox, '_bwrap_functional', lambda *a: False)
+    monkeypatch.setenv('KYREX_ALLOWED_TOOLS', 'read_local_file,run_command')
+    monkeypatch.setenv('KYREX_READ_ONLY_REPO', 'unexpected-read-only-value')
+    monkeypatch.setenv('GITHUB_TOKEN', 'private-host-token')
+    monkeypatch.setenv('GH_TOKEN', 'private-host-token')
+    captured = []
+    agent = headless_agent.HeadlessAgent(tmp_path / 'bridge.py', tmp_path,
+                                      read_only=False, surface='Kyrex Chat')
+    agent.out_q.put(('stdout', '{"type":"phase","value":"IDLE"}'))
+    monkeypatch.setattr(headless_agent.subprocess, 'Popen', lambda *a, **k: captured.append(k['env']) or SimpleNamespace())
+    monkeypatch.setattr(threading.Thread, 'start', lambda *a: None)
+    monkeypatch.setattr(agent, '_send', lambda *a: None)
+    assert agent.start('Inspect')
+    assert captured[0]['KYREX_ALLOWED_TOOLS'] == 'read_local_file'
+    assert not captured[0].get('GITHUB_TOKEN') and not captured[0].get('GH_TOKEN')
 
 
 @pytest.mark.parametrize('decision', ['APPROVED', 'DENIED', 'CHANGED'])

@@ -118,6 +118,7 @@ class HeadlessAgent:
         self.final_response = ""
         self.reasoning = ""
         self.chat_done_seen = False
+        self.command_runtime = None
 
     # ── stdio plumbing ──────────────────────────────────────────────
     def _stdout_reader(self):
@@ -178,14 +179,37 @@ class HeadlessAgent:
             env['KYREX_DEVELOPER_TRACKED_REMOVAL'] = '1'
         if self.read_only:
             env.pop("GITHUB_TOKEN", None)
+            env.pop("GH_TOKEN", None)
             env["KYREX_READ_ONLY_REPO"] = "1"
-            if self.surface == 'Kyrex Chat':
+        if self.surface == 'Kyrex Chat':
+            from kyrex.toolbox import command_runtime_status
+            effective_read_only = env.get('KYREX_READ_ONLY_REPO', '') not in ('', '0')
+            self.command_runtime = command_runtime_status(effective_read_only)
+            if effective_read_only:
+                env.pop('GITHUB_TOKEN', None)
+                env.pop('GH_TOKEN', None)
                 readers = ('read_local_file', 'list_local_files', 'github_read', 'run_command', 'task_complete')
+                if not self.command_runtime['available']:
+                    readers = tuple(name for name in readers if name != 'run_command')
                 inherited = env.get('KYREX_ALLOWED_TOOLS', '').strip()
                 if inherited:
                     allowed = {name.strip() for name in inherited.split(',')}
                     readers = tuple(name for name in readers if name in allowed)
                 env['KYREX_ALLOWED_TOOLS'] = ','.join(readers) or ','
+            env['KYREX_CHAT_SYSTEM_PROMPT'] = (
+                env.get('KYREX_CHAT_SYSTEM_PROMPT', '')
+                + '\n\nHost-checked command runtime: ' + json.dumps(self.command_runtime)
+                + '\nThis describes local command readiness, not remote GitHub permissions or test results. '
+                'Do not claim a check passed unless its command actually ran successfully. '
+                + ('run_command is unavailable in this read-only checkout. Use the file readers or '
+                   'github_read for source inspection; do not retry shell commands or claim that a '
+                   'different command can repair the host sandbox. '
+                   if not self.command_runtime['available'] else '')
+                + ('The local checkout is writable. A read-only GitHub reader does not prevent local edits or tests. '
+                   if not effective_read_only else 'The local checkout is read-only; do not promise local edits or a writable build. ')
+                + 'Local execution, the GitHub reader connection, and owner-reviewed PR publishing are separate capabilities. '
+                'Readiness does not expand the tools allowed for this turn.'
+            ).strip()
 
         self.proc = subprocess.Popen(
             [self.python, str(self.bridge)],

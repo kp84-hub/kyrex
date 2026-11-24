@@ -114,6 +114,8 @@ def test_search_and_list_reject_escape(tmp_path, monkeypatch):
 def test_read_only_bwrap_mount_is_read_only(monkeypatch):
     box = ToolBox(MagicMock())
 
+    # The mocked successful probe must not survive into real command tests.
+    monkeypatch.setattr('kyrex.toolbox._BWRAP_OK', None)
     monkeypatch.setenv("KYREX_READ_ONLY_REPO", "1")
     monkeypatch.setenv("WORKSPACE_ROOT", os.getcwd())
 
