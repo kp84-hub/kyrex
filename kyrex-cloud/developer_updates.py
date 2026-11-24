@@ -140,6 +140,7 @@ def tool_stage(event):
                     "invalid_arguments": "Tool arguments were invalid; correcting the request.",
                     "access_denied": "File access was denied; checking the allowed workspace.",
                     "terminal_confirmation": "Command needs terminal confirmation; choosing another approach.",
+                    "sandbox_unavailable": "Commands are blocked by the host sandbox; continuing with source inspection.",
                 }.get(error_type if isinstance(error_type, str) else "", "A tool failed; checking how to proceed.")
             code = result.get("exit_code", result.get("returncode", 0))
             if code not in (0, None):

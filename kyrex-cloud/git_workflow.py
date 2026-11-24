@@ -144,6 +144,12 @@ Do not append another "Task Complete" summary to the visible answer. If the
 engine needs task_complete, give it one brief sentence rather than repeating
 the final answer; use a substantive summary only when no answer was emitted.
 Your configured Bot provider, workspace, and permissions remain authoritative.
+Use the host-checked facts for this turn over earlier conversation claims about
+access. Keep the requested project distinct from the selected local repository:
+being able to read another project's GitHub source does not select it for edits.
+If they differ, inspect remotely where useful and give the repository-selection
+step; never edit the current project as a substitute. Read-only source review
+can still answer a question even when local commands are unavailable.
 """.strip()
 
 
@@ -335,6 +341,20 @@ def start_from_base(root, freshness):
     return f'Started {branch} from {base} at {remote[:12]}. The previous branch is still available.'
 
 
+def workspace_start_request(task, base):
+    """Recognize an explicit start request, optionally followed by more work.
+
+    Return None for ordinary discussion, and an empty string for start alone.
+    This does not bypass start_from_base's dirty-file or freshness checks.
+    """
+    match = re.fullmatch(
+        r'(?:please\s+)?(?:start|work)\s+from\s+(?:the\s+)?latest\s+'
+        + re.escape(base)
+        + r'(?:[.!]?|(?:\s*[,;:]\s*(?:(?:and\s+)?then\s+)?|\s+(?:and\s+then|and|then)\s+)(?P<followup>\S[\s\S]*))',
+        task.strip(), re.I)
+    return (match.group('followup') or '').strip() if match else None
+
+
 def run_workspace_agent(args, bridge, progress) -> dict:
     """Run one conversational turn in the Bot's existing checkout.
 
@@ -365,13 +385,24 @@ def run_workspace_agent(args, bridge, progress) -> dict:
                                                 getattr(args, "token", None))
         result["workspace_freshness"] = freshness
         base = freshness['base']
-        if re.fullmatch(r'(?:please\s+)?(?:start|work)\s+from\s+(?:the\s+)?latest\s+'
-                        + re.escape(base) + r'[.!]?', args.task.strip(), re.I):
-            result.update(status='no_changes', final_response=start_from_base(root, freshness))
-            result['branch'] = run_git(root, 'rev-parse', '--abbrev-ref', 'HEAD').stdout.strip()
-            result['finished_at'] = datetime.now(timezone.utc).isoformat()
-            return result
+        agent_task = args.task
+        followup = workspace_start_request(args.task, base)
+        if followup is not None:
+            transition = start_from_base(root, freshness)
+            if not followup:
+                result.update(status='no_changes', final_response=transition)
+                result['branch'] = run_git(root, 'rev-parse', '--abbrev-ref', 'HEAD').stdout.strip()
+                result['finished_at'] = datetime.now(timezone.utc).isoformat()
+                return result
+            agent_task = followup
+            progress({'type': 'progress', 'payload': {'stage': transition, 'category': 'developer'}})
         read_only = freshness['status'] in {'behind', 'diverged', 'unverified'}
+        selected = os.environ.get('KYREX_CONNECTED_REPOSITORY', '')
+        if not selected:
+            origin = run_git(root, 'remote', 'get-url', 'origin', check=False).stdout.strip()
+            identity = parse_owner_repo(origin)
+            selected = '/'.join(identity) if identity else 'unverified local repository'
+        result['repository'] = selected
         if read_only:
             if freshness['status'] == 'unverified':
                 message = f'This checkout is read-only because the latest {base} could not be verified. Check repository access and retry.'
@@ -384,7 +415,8 @@ def run_workspace_agent(args, bridge, progress) -> dict:
         original_prompt = os.environ.get("KYREX_CHAT_SYSTEM_PROMPT", "")
         os.environ["KYREX_CHAT_SYSTEM_PROMPT"] = (
             original_prompt + "\n\n" + WORKSPACE_AGENT_PROMPT
-            + "\nSelected connected repository: " + os.environ.get("KYREX_CONNECTED_REPOSITORY", "original workspace")
+            + "\nSelected local repository: " + selected
+            + "\nLocal checkout write permission for this turn: " + ('read-only' if read_only else 'writable')
             + "\nRepository freshness: " + json.dumps(freshness)
             + ("\n" + result['workspace_notice'] if read_only else '')).strip()
         try:
@@ -395,13 +427,15 @@ def run_workspace_agent(args, bridge, progress) -> dict:
                 surface="Kyrex Chat", read_only=read_only, host_read=github_host_read,
                 host_delete=(lambda frame: tracked_delete(root, freshness['head'], frame))
                 if not read_only and os.environ.get('KYREX_DEVELOPER_DELETE_BRIDGE') == '1' else None)
-            if agent.start(args.task):
+            if agent.start(agent_task):
                 progress({"type": "progress", "payload": {"stage": "Working in the developer workspace…", "category": "developer"}})
                 agent.run()
         finally:
             os.environ["KYREX_CHAT_SYSTEM_PROMPT"] = original_prompt
         result.update({"has_changes": workspace_fingerprint(root) != before,
                        "branch": run_git(root, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()})
+        if isinstance(getattr(agent, 'command_runtime', None), dict):
+            result['command_runtime'] = agent.command_runtime
         if not record_agent_result(result, agent):
             result["status"] = "completed" if result["has_changes"] else "no_changes"
     except Exception as exc:

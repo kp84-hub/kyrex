@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import git_workflow
 
@@ -135,6 +136,74 @@ class RiftFreshnessTests(unittest.TestCase):
         self.assertEqual(state["status"], "unverified")
         self.assertNotIn("remote_head", state)
         self.assertEqual(git_workflow.workspace_fingerprint(self.rift), before)
+
+    def test_explicit_start_then_work_runs_on_new_base_and_preserves_old_branch(self):
+        self.commit(self.rift, 'local', 'earlier local feature')
+        old_branch = git(self.rift, 'branch', '--show-current')
+        old_head = git(self.rift, 'rev-parse', 'HEAD')
+        self.commit(self.src, 'remote', 'latest remote feature')
+        args = self.args
+        args.read_only = False
+        args.task = 'Start from latest main, then fix the parser'
+        args.python = 'python3'
+        args.startup_timeout = args.idle_timeout = args.overall_timeout = 1
+        seen = []
+
+        class Agent:
+            chat_done_seen = terminal = True
+            outcome = 'complete'
+            execution_error = False
+            approvals = []; tool_calls = []; errors = []
+            final_response = 'Prepared the parser fix for review.'
+            def __init__(agent, bridge, root, **kwargs):
+                self.assertFalse(kwargs['read_only'])
+                self.assertEqual(git(root, 'rev-parse', 'HEAD'), git(self.src, 'rev-parse', 'HEAD'))
+            def start(agent, task):
+                seen.append(task)
+                return True
+            def run(agent):
+                (self.rift / 'parser.py').write_text('prepared fix')
+
+        with patch.object(git_workflow, 'HeadlessAgent', Agent), \
+             patch.object(git_workflow, 'commit_and_push', side_effect=AssertionError('no publication')), \
+             patch.object(git_workflow, 'open_pull_request', side_effect=AssertionError('no publication')):
+            result = git_workflow.run_workspace_agent(args, None, lambda _: None)
+        self.assertEqual(result['status'], 'completed')
+        self.assertEqual(seen, ['fix the parser'])
+        self.assertTrue(result['has_changes'])
+        self.assertEqual(git(self.rift, 'rev-parse', old_branch), old_head)
+        self.assertNotEqual(git(self.rift, 'branch', '--show-current'), old_branch)
+        self.assertEqual((self.rift / 'parser.py').read_text(), 'prepared fix')
+
+    def test_start_then_work_cannot_switch_past_dirty_work(self):
+        self.commit(self.rift, 'local', 'earlier feature')
+        self.commit(self.src, 'remote', 'remote feature')
+        (self.rift / 'notes').write_text('keep these notes')
+        self.args.read_only = False
+        self.args.task = 'Start from latest main and implement the new feature'
+        before = git_workflow.workspace_fingerprint(self.rift)
+        with patch.object(git_workflow, 'HeadlessAgent', side_effect=AssertionError('must not start')):
+            result = git_workflow.run_workspace_agent(self.args, None, lambda _: None)
+        self.assertEqual(result['status'], 'error')
+        self.assertIn('uncommitted files', result['errors'][0])
+        self.assertEqual(git_workflow.workspace_fingerprint(self.rift), before)
+
+    def test_start_parser_requires_explicit_base_specific_instruction(self):
+        for task, expected in [
+            ('Start from latest main', ''),
+            ('Please work from the latest main.', ''),
+            ('Start from latest main and fix it', 'fix it'),
+            ('Start from latest main, then fix it', 'fix it'),
+            ('Start from latest main; and then test it', 'test it'),
+            ('Start from latest main then inspect it', 'inspect it'),
+            ('Should I start from latest main?', None),
+            ('Do not start from latest main', None),
+            ('Review the phrase "Start from latest main"', None),
+            ('Start from latest mainline and fix it', None),
+            ('Start from latest develop and fix it', None),
+        ]:
+            with self.subTest(task=task):
+                self.assertEqual(git_workflow.workspace_start_request(task, 'main'), expected)
 
 
 if __name__ == "__main__":

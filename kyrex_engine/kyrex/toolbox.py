@@ -49,12 +49,29 @@ def _bwrap_functional(path):
         return _BWRAP_OK
     try:
         import subprocess as _sp
-        r = _sp.run([path, "--unshare-all", "--dev", "/dev", "sh", "-c", "true"],
+        # Bubblewrap starts with an empty filesystem. Without a root mount
+        # the probe cannot find its shell, even on a namespace-capable host.
+        # This fixed no-op receives no task text and cannot write host files.
+        r = _sp.run([path, "--die-with-parent", "--unshare-all",
+                     "--ro-bind", "/", "/", "--dev", "/dev", "--",
+                     "/bin/sh", "-c", "true"],
                     capture_output=True, timeout=5)
         _BWRAP_OK = (r.returncode == 0)
     except Exception:
         _BWRAP_OK = False
     return _BWRAP_OK
+
+
+def command_runtime_status(read_only: bool) -> dict:
+    """Project the same execution prerequisites run_command enforces.
+
+    This is readiness, not proof that a particular command or test will pass.
+    Namespace restrictions remain authoritative; no fallback is added here.
+    """
+    sandboxed = _bwrap_functional(shutil.which("bwrap"))
+    return {"available": not read_only or sandboxed,
+            "mode": "sandboxed" if sandboxed else "blocked" if read_only else "credential_scrubbed",
+            "workspace_read_only": read_only}
 
 # ── VS Code edit proposal shared state ──
 # Accessed by both toolbox (proposer) and core_bridge stdin_thread (resolver).
@@ -1175,7 +1192,9 @@ class ToolBox:
 
         _sandbox_ok = _bwrap_functional(_bwrap_path)
         if _repo_is_read_only() and not _sandbox_ok:
-            return {"error": "Read-only repository execution requires a working sandbox (bwrap); refusing unsandboxed command"}
+            return {"error": "Read-only repository execution requires a working sandbox (bwrap); refusing unsandboxed command",
+                    "error_type": "sandbox_unavailable", "retryable": False,
+                    "recovery": "Use file readers or github_read for inspection. Commands in this read-only checkout require a working host sandbox; changing the command cannot fix that."}
 
         # ── Dedicated deletion approval gate ──
         # All rm/rmdir/unlink/find -delete commands go through this distinct gate
