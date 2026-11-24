@@ -434,7 +434,8 @@ class TestRunCommand:
     def test_returns_exit_code(self, toolbox):
         """Should return command exit code."""
         result = toolbox.run_command("exit 42")
-        assert result["status"] == "ok"
+        assert result["status"] == "error"
+        assert result["error_type"] == "command_failed"
         assert result["returncode"] == 42
 
     def test_captures_stderr(self, toolbox):
