@@ -14,6 +14,8 @@ import threading
 from pathlib import Path
 from typing import Optional
 
+from .command_diagnostics import command_failure
+
 
 def _repo_is_read_only() -> bool:
     """Single source of truth for read-only enforcement.
@@ -1333,7 +1335,7 @@ class ToolBox:
                 run_cwd = None
             else:
                 import sys as _sys
-                _sys.stderr.write("[!] bwrap unavailable or non-functional -- running command without sandbox (credentials scrubbed, network-write git blocked)\n")
+                _sys.stderr.write("[!] bwrap unavailable or non-functional -- running command without sandbox; secret token variables removed. Authenticated Git operations may fail.\n")
                 wrapped_cmd = command
                 shell_flag = True
                 run_cwd = str(Path.cwd().resolve())
@@ -1343,12 +1345,15 @@ class ToolBox:
             # command slipped the pattern block above, it has no token to push
             # with. Own-repo (writable) execution keeps its credentials.
             _cmd_env = os.environ.copy()
+            _github_env_filtered = False
             # Scrub push credentials + secrets in two cases:
             #  1. read-only repo — no write cred should reach the shell, and
             #  2. unsandboxed execution (bwrap unavailable) — a missing sandbox
             #     must NOT leave the full secret environment exposed to an
             #     arbitrary command. Own-repo sandboxed execution keeps creds.
             if _repo_is_read_only() or not _sandbox_ok:
+                _github_env_filtered = any(_cmd_env.get(key) for key in (
+                    "GITHUB_TOKEN", "GH_TOKEN", "GITHUB_PAT", "KYREX_SCOPED_TOKENS"))
                 for _k in ("GITHUB_TOKEN", "GH_TOKEN", "GITHUB_PAT",
                            "KYREX_SCOPED_TOKENS", "KYREX_API_KEY", "OPENAI_API_KEY",
                            "ANTHROPIC_API_KEY", "GOOGLE_REFRESH_TOKEN",
@@ -1376,12 +1381,17 @@ class ToolBox:
             if denied is not None:
                 return denied
 
-            return {
+            response = {
                 "status": "ok",
                 "command": command,
                 "returncode": result.returncode,
                 "output": output,
             }
+            if result.returncode != 0:
+                response.update(command_failure(
+                    result.returncode, result.stdout + "\n" + result.stderr,
+                    sandboxed=_sandbox_ok, credentials_filtered=_github_env_filtered))
+            return response
         except subprocess.TimeoutExpired as exc:
             # A timed-out command may already have changed files. Preserve the
             # same write review gate and report partial output before recovery.

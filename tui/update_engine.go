@@ -792,6 +792,31 @@ func (m Model) handleToolResult(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 				hasErr = true
 				m.Tools.UpdateLast(ToolStateFailed, resultStr)
 			}
+			// Older engines report status=ok even when a shell command exits
+			// unsuccessfully. Honor its exit code rather than painting a failed
+			// fetch/build green while the user waits for a credential repair.
+			if !hasErr {
+				failure := ""
+				switch code := resMap["returncode"].(type) {
+				case float64: // JSON engine frames
+					if code != 0 {
+						failure = fmt.Sprintf("Command exited with code %g", code)
+					}
+				case int: // in-process callers
+					if code != 0 {
+						failure = fmt.Sprintf("Command exited with code %d", code)
+					}
+				}
+				if failure == "" && (resMap["status"] == "error" || resMap["status"] == "failed") {
+					failure = "Tool reported failure"
+				}
+				if failure != "" {
+					hasErr = true
+					resultStr = "ERR: " + failure
+					m.ToolResult = resultStr
+					m.Tools.UpdateLast(ToolStateFailed, resultStr)
+				}
+			}
 		}
 	}
 	if m.ToolResult == "OK" {
