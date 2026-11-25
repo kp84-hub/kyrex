@@ -5,8 +5,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright';
 
-const root = path.resolve('dist'), key = 'offline-browser-search-fixture';
-let configured = false;
+const root = path.resolve('dist'), key = 'tvly-offline-browser-search-fixture';
+let configured = false, requiresReconnect = false;
 const mutations = [], errors = [];
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
@@ -18,10 +18,10 @@ const server = http.createServer(async (req, res) => {
       if (req.method !== 'GET') {
         let body = ''; for await (const chunk of req) body += chunk;
         mutations.push({ method: req.method, body });
-        if (req.method === 'PUT') { assert.deepEqual(JSON.parse(body), { key }); configured = true; }
-        else if (req.method === 'DELETE') configured = false;
+        if (req.method === 'PUT') { assert.deepEqual(JSON.parse(body), { key }); configured = true; requiresReconnect = false; }
+        else if (req.method === 'DELETE') { configured = false; requiresReconnect = false; }
       }
-      data = { provider: 'brave', configured };
+      data = { provider: 'tavily', configured, requires_reconnect: requiresReconnect };
     }
     res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data)); return;
   }
@@ -39,20 +39,25 @@ try {
   browser = await chromium.launch({ headless: true, executablePath: process.env.KYREX_TEST_CHROMIUM || undefined,
     args: ['--no-sandbox', '--disable-dev-shm-usage'] });
   for (const [width, height] of [[390, 844], [844, 390], [1280, 900]]) {
-    configured = false;
+    configured = false; requiresReconnect = width === 390;
     const page = await browser.newPage({ viewport: { width, height } });
     page.on('pageerror', error => errors.push(error.message));
     await page.goto('http://127.0.0.1:' + server.address().port + '/?settings=voice');
     const section = page.getByLabel('Web search connection', { exact: true });
     await section.locator('summary').click();
-    const input = section.getByLabel('Brave Search API key', { exact: true });
+    if (requiresReconnect) {
+      await section.getByText('Web search now uses Tavily. Replace your saved Brave key with a Tavily key to reconnect.', { exact: true }).waitFor();
+      assert.equal(await section.getByRole('button', { name: 'Disconnect web search', exact: true }).count(), 1);
+    }
+    const input = section.getByLabel('Tavily Search API key', { exact: true });
     await input.fill(key);
     await section.getByRole('button', { name: 'Save key', exact: true }).click();
     await section.getByText('Key saved. API access will be checked when you search.', { exact: true }).waitFor();
     assert.equal(await input.inputValue(), '');
+    assert.equal((await section.textContent()).includes('Replace your saved Brave key'), false);
     assert.equal((await section.textContent()).includes(key), false);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
-    assert.equal(await page.evaluate(() => Object.values(localStorage).some(value => value.includes('offline-browser-search-fixture'))), false);
+    assert.equal(await page.evaluate(() => Object.values(localStorage).some(value => value.includes('tvly-offline-browser-search-fixture'))), false);
     await section.getByRole('button', { name: 'Disconnect web search', exact: true }).click();
     await section.getByRole('button', { name: 'Confirm disconnect', exact: true }).click();
     await section.getByText('Web search disconnected.', { exact: true }).waitFor();

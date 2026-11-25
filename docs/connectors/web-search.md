@@ -1,10 +1,19 @@
 # API web search in Kyrex Chat
 
-Open **Connections → Web search**, get a Brave Search API key from
-[Brave's dashboard](https://api-dashboard.search.brave.com/), and save it in
-the password field. Queries are sent to Brave, and its usage charges follow
-the owner's provider plan. Saving a key makes no provider request and does
+Open **Connections → Web search**, get a Tavily API key from
+[Tavily's dashboard](https://app.tavily.com/), and save it in the password field.
+Choose the free Researcher plan and keep pay-as-you-go disabled in Tavily.
+It includes 1,000 monthly credits without a credit card; basic search uses one
+credit per request. When the allowance is exhausted, search reports the limit
+instead of retrying or enabling paid usage. Kyrex cannot change or guarantee
+the billing settings of a provider account; a paid/PAYG-enabled key follows
+that account's billing settings.
+
+Queries are sent to Tavily. Saving a key makes no provider request and does
 not claim the key has been verified. API access is checked on the first search.
+Previously saved Brave keys are marked as requiring reconnection and never
+sent to Tavily. Replace the key or disconnect it in Connections. Keys must
+start with `tvly-`; credentials are bound to their provider in encrypted storage.
 
 The authenticated Chat engine, including The Overwatcher, receives a
 `web_search` tool when the owner has saved a key and the current Bot permits
@@ -26,7 +35,7 @@ empty response is a successful search with no matching eligible links. The
 guidance does not fall back to cycling through search-engine websites.
 
 Keys are owner-scoped and sealed using the existing connector encryption.
-Views contain only provider/configured/update metadata, never the key. The
+Views contain only provider/configured/reconnect/update metadata, never the key. The
 settings API requires authentication and a same-origin mutation, suppresses
 credential-bearing validation errors, and marks responses `no-store`.
 There is no global environment-key fallback and no provider-key transfer to
@@ -42,12 +51,16 @@ returning results. Disconnecting or replacing a key invalidates in-flight
 results. Discovery never changes repository read-only mode or grants a
 delegated effect. Unbound terminal/headless engines do not gain this tool.
 
-Requests use Brave's fixed HTTPS web-search endpoint and subscription-token
-header, with redirects disabled, a ten-second network timeout, a 1 MiB
-response bound, at most ten results and three calls per Chat turn. SQLite
-enforces one request per second per owner across conversations/processes.
-There are no automatic retries, search-query database records or added result
-caches. Provider billing limits remain in the owner's Brave account.
+Requests POST JSON to Tavily's fixed HTTPS search endpoint with a Bearer
+header. The host fixes `search_depth=basic`, `auto_parameters=false` and
+`topic=general`, with answers, raw content and images disabled. Bots cannot
+select advanced search or automatic parameter upgrades. Redirects are disabled,
+with a ten-second network timeout, a 1 MiB response bound, at most ten results
+and three calls per Chat turn. SQLite enforces one request per second per owner
+across conversations/processes. There are no automatic retries, query records
+in this connection store or added result caches. Provider billing limits remain
+in the owner's Tavily account. HTTP 429/432/433 are reported as rate/quota limits;
+invalid credentials and temporary failures remain distinct from empty results.
 
 Deploy the Cloud backend/worker and Chat frontend containing this change,
 then save a key in Connections. Browser Host and local TUI updates are not
@@ -57,5 +70,5 @@ builds do not establish that outcome.
 
 Provider references:
 
-- [Web Search API](https://api-dashboard.search.brave.com/api-reference/web/search/get)
-- [Key authentication](https://api-dashboard.search.brave.com/documentation/guides/authentication)
+- [Tavily Search API](https://docs.tavily.com/documentation/api-reference/endpoint/search)
+- [Billing, credits and usage limits](https://help.tavily.com/articles/8298987937-billing-credits-usage-limits)
