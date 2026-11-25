@@ -146,6 +146,7 @@ PR_REQUEST = ('Carry the calendar title fix onto main today, run the full suite,
     'Ask Developer Bot to check my calendar today.',
     'Show my workouts this week.',
     'Read the last message in my inbox.',
+    'Change my voice settings.',
 ])
 def test_developer_route_leaves_questions_and_connected_actions_alone(text):
     assert action(text) is None
@@ -223,6 +224,7 @@ def test_pr_request_and_status_use_one_developer_task(work_chat):
     'Implement search filters for the transaction list.',
     'Run pytest on the voice connector.',
     'Ask Developer Bot to investigate why the archive screen freezes.',
+    'Can you ask DevBot to remove the crypto bot and the crypto settings from the settings?',
 ])
 def test_repository_work_uses_developer_chat_without_requiring_a_pr(work_chat, text):
     store, developer_chat_id, send = work_chat

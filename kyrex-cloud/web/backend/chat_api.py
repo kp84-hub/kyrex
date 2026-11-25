@@ -45,9 +45,11 @@ request bodies may carry a ``request_id``; if omitted one is generated so the
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import uuid
 import re
+from contextlib import aclosing
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
@@ -177,6 +179,8 @@ async def _drive_stream(gen, request_id: str, conversation_id: str):
                              if frame.get("developer_result") else {})
                 if frame.get("developer_verification") is not None:
                     developer["developer_verification"] = frame["developer_verification"]
+                if status == "error" and frame.get("check_status"):
+                    developer["check_status"] = True
                 if status == "complete":
                     yield _sse_frame({"type": "done",
                                       "content": frame.get("content", ""),
@@ -261,8 +265,31 @@ async def chat(request: Request):
             status_code=400,
             detail=f"unknown or unavailable workspace '{ws_value}'")
 
+    resumable = body.get("resumable") is True and bool(conversation_id)
+    if resumable:
+        import chat_delivery
+        if not re.fullmatch(r"[0-9a-f]{32}", conversation_id) or not re.fullmatch(r"[\w-]{1,100}", request_id, re.ASCII):
+            raise HTTPException(400, "Invalid conversation or request identifier.")
+        payload = hashlib.sha256(json.dumps(
+            [message, image_ids, ws_value if "workspace_id" in body else None, device_location],
+            sort_keys=True).encode()).digest()
+        if old := chat_delivery.find(request_id):
+            if (old.user, old.conversation, old.payload) != (user, conversation_id, payload):
+                raise HTTPException(409, "This request ID is already in use.")
+            return _chat_delivery_response(old, 0)
+        conv = chat_service.get_conversation(user, conversation_id)
+        if conv is None:
+            raise HTTPException(404, "Conversation not found.")
+        if any(m.get("id") == f"turn-{request_id}-user" for m in conv.get("messages", [])):
+            raise HTTPException(409, "This request is already saved. Reopen the conversation to check its result.")
+        if any(view.user == user and view.conversation == conversation_id and view.finished_at is None
+               for view in chat_delivery.deliveries.values()):
+            raise HTTPException(409, "A request is still running in this conversation.")
+    if request_id in _active_streams:
+        raise HTTPException(409, "This request ID is already active.")
     cancel_event = asyncio.Event()
-    _active_streams[request_id] = {"user": user, "event": cancel_event}
+    entry = {"user": user, "event": cancel_event}
+    _active_streams[request_id] = entry
 
     async def event_stream():
         try:
@@ -274,9 +301,9 @@ async def chat(request: Request):
                 request_id=request_id,
                 **({'device_location': device_location} if chat_maps.requested(message) else {}),
                 **({'image_ids': image_ids} if image_ids else {}))
-            async for frame in _with_chat_keepalive(
-                    _drive_stream(gen, request_id, conversation_id)):
-                yield frame
+            async with (aclosing(gen), aclosing(_drive_stream(gen, request_id, conversation_id)) as frames):
+                async for frame in frames:
+                    yield frame
         except chat_service.ChatUnavailable as exc:
             yield _sse_frame({"type": "error", "message": str(exc)})
         except Exception:
@@ -286,7 +313,6 @@ async def chat(request: Request):
             # Stop usable until its detached producer saves the final result.
             import workout_booking_chat
             producer = workout_booking_chat.running(user, request_id)
-            entry = _active_streams.get(request_id)
             def forget(_=None):
                 if _active_streams.get(request_id) is entry:
                     _active_streams.pop(request_id, None)
@@ -295,11 +321,36 @@ async def chat(request: Request):
             else:
                 forget()
 
+    if resumable:
+        delivery = chat_delivery.Delivery(user, conversation_id, payload)
+        if not chat_delivery.start(request_id, delivery, event_stream()):
+            _active_streams.pop(request_id, None)
+            raise HTTPException(503, "Chat is busy. Try again shortly.")
+        return _chat_delivery_response(delivery, 0)
     return StreamingResponse(
-        event_stream(),
+        _with_chat_keepalive(event_stream()),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+def _chat_delivery_response(delivery, cursor):
+    return StreamingResponse(_with_chat_keepalive(delivery.view(cursor)),
+                             media_type="text/event-stream",
+                             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no",
+                                      "X-Kyrex-Resumable": "1"})
+
+
+@router.get("/api/chat/resume/{conversation_id}/{request_id}")
+async def resume_chat(conversation_id: str, request_id: str, request: Request, after: int = 0):
+    import chat_delivery
+    user = _require_user(request)
+    delivery = chat_delivery.find(request_id)
+    if delivery is None or delivery.user != user or delivery.conversation != conversation_id:
+        raise HTTPException(404, "The live reply is unavailable. Check the saved conversation and its tasks.")
+    if not 0 <= after <= delivery.cursor:
+        raise HTTPException(400, "Invalid reply position.")
+    return _chat_delivery_response(delivery, after)
 
 
 @router.post('/api/conversations/{conversation_id}/images')
