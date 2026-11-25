@@ -4,15 +4,15 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import WebSearchConnection from '../src/components/WebSearchConnection.jsx';
 
-const KEY = 'offline-ui-search-credential';
-async function mount({ configured = false, fail = false } = {}) {
+const KEY = 'tvly-offline-ui-search-credential';
+async function mount({ configured = false, fail = false, requiresReconnect = false } = {}) {
   const calls = [];
   globalThis.fetch = async (url, options = {}) => {
     const method = options.method || 'GET'; calls.push({ url, ...options, method });
     if (fail && method === 'PUT') return { ok: false, status: 422, json: async () => ({ detail: KEY }) };
-    if (method === 'PUT') configured = true;
-    if (method === 'DELETE') configured = false;
-    return { ok: true, status: 200, json: async () => ({ provider: 'brave', configured }) };
+    if (method === 'PUT') { configured = true; requiresReconnect = false; }
+    if (method === 'DELETE') { configured = false; requiresReconnect = false; }
+    return { ok: true, status: 200, json: async () => ({ provider: 'tavily', configured, requires_reconnect: requiresReconnect }) };
   };
   const container = document.createElement('div'); document.body.append(container);
   const root = createRoot(container);
@@ -21,7 +21,7 @@ async function mount({ configured = false, fail = false } = {}) {
 }
 const button = (container, label) => [...container.querySelectorAll('button')].find(b => b.textContent === label);
 async function enter(container) {
-  const element = container.querySelector('[aria-label="Brave Search API key"]');
+  const element = container.querySelector('[aria-label="Tavily Search API key"]');
   await act(async () => {
     Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(element, KEY);
     element.dispatchEvent(new window.Event('input', { bubbles: true }));
@@ -65,5 +65,18 @@ test('disconnect requires confirmation and removes the configured state', async 
     await act(async () => button(view.container, 'Confirm disconnect').click());
     assert.equal(view.calls.filter(c => c.method === 'DELETE').length, 1);
     assert.ok(button(view.container, 'Save key'));
+  } finally { await view.close(); }
+});
+
+
+test('old provider connection explains reconnection and can be replaced or removed', async () => {
+  const view = await mount({ requiresReconnect: true });
+  try {
+    assert.match(view.container.textContent, /Replace your saved Brave key with a Tavily key/);
+    assert.ok(button(view.container, 'Disconnect web search'));
+    assert.ok(button(view.container, 'Save key'));
+    await enter(view.container); await submit(view.container);
+    assert.ok(!view.container.textContent.includes('Replace your saved Brave key'));
+    assert.ok(button(view.container, 'Replace key'));
   } finally { await view.close(); }
 });

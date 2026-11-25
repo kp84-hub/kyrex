@@ -38,18 +38,19 @@ export default function WebSearchConnection() {
 
   return <details className="connection-card connector-card" aria-label="Web search connection">
     <summary className="connector-row"><span className="connector-identity"><strong>Web search</strong>
-      <span className="connector-category">Brave Search API · {view?.configured ? 'Key saved' : 'Find links for your Bots'}</span></span></summary>
+      <span className="connector-category">Tavily Search API · {view?.configured ? 'Key saved' : 'Find links for your Bots'}</span></span></summary>
     <div className="connector-detail-panel">
       <p>Search through an API, then let Browser Bot verify the websites. Search snippets alone do not confirm current stock, prices or other live details.</p>
-      <p>Search queries go to Brave. Your key is encrypted on the server and stays out of Bot prompts. Provider usage charges follow your Brave plan.</p>
-      <p><a href="https://api-dashboard.search.brave.com/" target="_blank" rel="noreferrer">Get a Brave Search API key</a></p>
+      <p>Search queries go to Tavily. Your key is encrypted on the server and stays out of Bot prompts. Kyrex uses basic search. The free Researcher plan includes 1,000 monthly credits; keep pay-as-you-go off in Tavily to avoid usage charges.</p>
+      <p><a href="https://app.tavily.com/" target="_blank" rel="noreferrer">Get a Tavily Search API key</a></p>
+      {view?.requires_reconnect && <p role="status">Web search now uses Tavily. Replace your saved Brave key with a Tavily key to reconnect.</p>}
       {view && <form className="provider-form" onSubmit={save}>
-        <label>Brave Search API key<input aria-label="Brave Search API key" type="password" value={key}
+        <label>Tavily Search API key<input aria-label="Tavily Search API key" type="password" value={key}
           minLength={8} maxLength={4096} autoComplete="new-password" required
           onChange={event => setKey(event.target.value)} /></label>
         <button className="connection-btn" disabled={busy || !key.trim()}>{view.configured ? 'Replace key' : 'Save key'}</button>
       </form>}
-      {view?.configured && <button type="button" className="connection-btn secondary" disabled={busy}
+      {(view?.configured || view?.requires_reconnect) && <button type="button" className="connection-btn secondary" disabled={busy}
         onClick={() => setRemoving(true)}>Disconnect web search</button>}
       {removing && <div role="group" aria-label="Confirm web search disconnect">
         <p>Remove this key and stop API web search for your Bots?</p>
