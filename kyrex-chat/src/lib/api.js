@@ -2,6 +2,13 @@
 
 const BASE = '/api';
 
+export async function webSearchRequest(method = 'GET', body) {
+  return handle(await fetch(`${BASE}/connections/web-search`, {
+    method, cache: 'no-store', credentials: 'same-origin', signal: AbortSignal.timeout(15000),
+    ...(body ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}),
+  }));
+}
+
 export async function accountRequest(path, method = 'GET', body) {
   return handle(await fetch(path, { method, cache: 'no-store', credentials: 'same-origin',
     signal: AbortSignal.timeout(35000), ...(body !== undefined ? {

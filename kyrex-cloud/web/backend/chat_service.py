@@ -1178,6 +1178,29 @@ class EngineSession:
         except Exception:
             return False, {'error': 'Email review is unavailable. No email was approved or sent by this tool.'}
 
+    def _handle_web_search(self, frame: dict, cancel_check=None) -> tuple[bool, dict]:
+        import web_search
+        owner = getattr(self, 'web_search_owner', None)
+        def allowed():
+            return bool(owner and 'web_search' in self.allowed_tools
+                and not getattr(self, '_closed', False)
+                and not getattr(self, '_fitness_read_only', False)
+                and not (cancel_check and cancel_check())
+                and web_search.bot_allowed(owner, self.bot_id))
+        if not allowed():
+            return False, {'error': 'API web search is not granted in this session.', 'error_type': 'access_denied'}
+        if getattr(self, '_web_search_calls', 0) >= 3:
+            return False, {'error': 'This turn has used its search budget. Use the existing results.', 'error_type': 'rate_limited'}
+        self._web_search_calls = getattr(self, '_web_search_calls', 0) + 1
+        try:
+            return True, web_search.SearchConnection().search(owner, frame.get('query'),
+                frame.get('count', 5), authorize=allowed)
+        except web_search.SearchError as exc:
+            return False, {'error': str(exc), 'error_type': exc.code, 'retryable': False}
+        except Exception:
+            return False, {'error': 'API web search is unavailable. No search results were verified.',
+                           'error_type': 'provider_unavailable', 'retryable': False}
+
     def _handle_maps_route(self, frame: dict, cancel_check=None) -> tuple[bool, dict]:
         import chat_maps
         owner = getattr(self, 'maps_owner', None)
@@ -1448,6 +1471,13 @@ class EngineSession:
         """
         ctx = self.delegation_ctx or {}
         try:
+            import web_search
+            if ('web_search' in getattr(self, 'allowed_tools', ())
+                    and web_search.search_page_task(frame.get('task'))
+                    and web_search.bot_allowed(ctx.get('owner'), self.bot_id)
+                    and web_search.SearchConnection().view(ctx.get('owner'))['configured']):
+                return False, {'error': 'Use web_search for link discovery, then delegate a read of the returned website URL. Search-engine query pages are not needed with API search connected.',
+                               'error_type': 'use_search_api'}
             safe = delegation.submit_delegation(
                 ctx.get("owner"),
                 ctx.get("bot") or {},
@@ -1531,6 +1561,7 @@ class EngineSession:
             self._observed_delegation_results = set()
             self._gmail_inline_cache = {}
             self._connected_handoffs = {}
+            self._web_search_calls = 0
             # Spend this budget only while waiting for Browser evidence;
             # reasoning and other tool calls must not consume it.
             self._browser_research_ids = []
@@ -1612,7 +1643,11 @@ class EngineSession:
                                 "editId": frame.get("editId"), "accepted": False})
                 elif t == "confirm_request":
                     _confirm_value = str(frame.get("value"))
-                    if _confirm_value == "maps_route":
+                    if _confirm_value == 'web_search':
+                        approved, result = self._handle_web_search(frame, cancel_check)
+                        self._send({'type': 'confirm_response', 'id': frame.get('id'),
+                                    'approved': approved, 'result': result})
+                    elif _confirm_value == "maps_route":
                         approved, result = self._handle_maps_route(frame, cancel_check)
                         self._send({"type": "confirm_response", "id": frame.get("id"),
                                     "approved": approved, "result": result})
@@ -1791,6 +1826,17 @@ def _get_engine_session(user: str, conversation_id: str,
     except Exception:
         mcp_available = False
     tools = set(bot_cfg.get("allowed_tools", bot_capabilities.CHAT_HOST_BASE_TOOLS))
+    import web_search
+    tools.discard('web_search')
+    try:
+        search_available = (not bot_cfg.get('restricted_surface')
+            and web_search.bot_allowed(user, want_bot)
+            and web_search.SearchConnection().view(user)['configured'])
+    except Exception:
+        search_available = False
+    if search_available:
+        tools.add('web_search')
+        bot_cfg['system_prompt'] = (bot_cfg.get('system_prompt') or '') + '\n\n' + web_search.GUIDANCE
     import chat_maps
     tools.discard('maps_route')
     if (bot_cfg.get('maps_request') and not bot_cfg.get('restricted_surface')
@@ -1853,6 +1899,7 @@ def _get_engine_session(user: str, conversation_id: str,
     sess.email_owner = user
     sess.email_conversation = conversation_id
     sess.maps_owner = user
+    sess.web_search_owner = user
     _engine_sessions[key] = sess
     while len(_engine_sessions) > MAX_ENGINE_SESSIONS:
         _, oldest = _engine_sessions.popitem(last=False)

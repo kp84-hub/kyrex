@@ -817,6 +817,25 @@ class ToolBox:
             return {"status": "ok", "source": str(best), "content": best.read_text(errors="ignore")[:1200]}
         return {"status": "ok", "content": "No local knowledge found. Proceeding with internal training."}
 
+    def web_search(self, query, count=5):
+        """Only the authenticated Chat host holds the search key and owner."""
+        allowed = {name.strip() for name in os.environ.get('KYREX_ALLOWED_TOOLS', '').split(',')}
+        if os.environ.get('KYREX_SURFACE') != 'Kyrex Chat' or 'web_search' not in allowed:
+            return {'error': 'API web search is not granted in this session.'}
+        confirm_id = str(uuid.uuid4())
+        event = threading.Event()
+        _pending_confirmations[confirm_id] = event
+        sys.stdout.write(json.dumps({'type': 'confirm_request', 'id': confirm_id,
+            'value': 'web_search', 'query': query, 'count': count}) + '\n')
+        sys.stdout.flush()
+        resolved = event.wait(timeout=25)
+        _pending_confirmations.pop(confirm_id, None)
+        approved = _confirmation_results.pop(confirm_id, False)
+        result = _confirmation_payloads.pop(confirm_id, None) or {}
+        if not resolved or not isinstance(result, dict) or not result:
+            return {'error': 'API web search did not return a result.', 'error_type': 'provider_unavailable'}
+        return result if approved else {**result, 'error': result.get('error') or 'API web search unavailable.'}
+
     def maps_route(self, destination, origin="", mode="driving"):
         """Ask the existing Chat host for a route; no API key or GPS enters this process."""
         if os.environ.get("KYREX_SURFACE") != "Kyrex Chat":
@@ -1383,6 +1402,13 @@ class ToolBox:
 
 # Built-in tool schemas
 BUILTIN_TOOLS = {
+    'web_search': {
+        'description': 'Search the public web through the owner-connected search API before using Browser Bot to verify returned URLs. Results contain titles, URLs and snippets, not live page verification. Send only public search terms needed for the owner request. Do not send private records, credentials or conversation transcripts. Report API errors; do not cycle through search-engine websites.',
+        'parameters': {'type': 'object', 'properties': {
+            'query': {'type': 'string', 'minLength': 1, 'maxLength': 600},
+            'count': {'type': 'integer', 'minimum': 1, 'maximum': 10, 'default': 5}},
+            'required': ['query'], 'additionalProperties': False},
+    },
     "budget_read": {
         "description": "Read the current owner's saved budget for a YYYY-MM month (default current month). In private bank mode the host returns only fixed category/day totals, comparison periods, freshness/completeness flags and an optional owner-entered cash estimate; no individual transactions, merchants or account details. Otherwise returns the email receipt ledger with up to 50 compact entries/subscriptions and explicit coverage/truncation. Amounts are integer minor currency units; keep currencies separate. Pending/excluded items do not count toward spending. A calculated cash estimate is not a live bank balance or safe-to-spend promise. Missing data is not zero spending. Never claim to pay, transfer, cancel subscriptions or change records. Settings → Budget Bot controls configuration.",
         "parameters": {"type":"object", "properties":{"month":{"type":"string", "description":"YYYY-MM, or empty for current month"}}, "required":[]},

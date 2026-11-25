@@ -48,6 +48,7 @@ jobs:
           ./tests/level6PreviewRunNow.test.mjs
           ./tests/emailInboxConnection.test.mjs ./tests/emailAccountsConnection.test.mjs ./tests/connectionsHub.test.mjs ./tests/connectionsConsent.test.mjs
           ./tests/remoteMCP.test.mjs ./tests/composioApps.test.mjs
+          ./tests/webSearchConnection.test.mjs
           ./tests/voiceConnection.test.mjs ./tests/voiceClient.test.mjs ./tests/voiceFollowUp.test.mjs
           ./tests/voiceSpeechPlayback.test.mjs
           ./tests/voiceScreenLock.test.mjs
@@ -69,6 +70,8 @@ jobs:
       - name: Check native selection and clipboard through the rendered transcript
         run: node tests/messageSelection.browser.mjs
       - run: npm run build
+      - name: Check search key settings in phone portrait, landscape and desktop
+        run: node tests/webSearchConnection.browser.mjs
       - name: Check actual browser notification delivery and conversation links
         run: xvfb-run -a node tests/notifications.browser.mjs
       - name: Check Kbot gestures, compact inbox, flight poses and reduced motion

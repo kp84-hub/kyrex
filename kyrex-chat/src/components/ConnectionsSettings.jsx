@@ -6,6 +6,7 @@ import EmailInboxConnection from './EmailInboxConnection.jsx';
 import EmailAccountsConnection from './EmailAccountsConnection.jsx';
 import BrowserConnection from './BrowserConnection.jsx';
 import RemoteMCPConnection from './RemoteMCPConnection.jsx';
+import WebSearchConnection from './WebSearchConnection.jsx';
 import { androidHealthIntent, androidNativeIntent } from '../lib/androidHealth.js';
 import { reserveConsentWindow, consentUrl, navigateConsentWindow, closeConsentWindow } from '../lib/consentWindow.js';
 import {
@@ -442,6 +443,7 @@ export default function ConnectionsSettings({ onClose }) {
           <EmailAccountsConnection onChange={refresh} />
           <EmailInboxConnection onChange={refresh} />
           <BrowserConnection />
+          <WebSearchConnection />
           <RemoteMCPConnection />
           <VoiceConnection androidIntegrated={androidVoice} />
           {androidMessages && onAndroid ? <p><a href={androidNativeIntent('licenses')}>Android app licenses and source</a></p> : null}

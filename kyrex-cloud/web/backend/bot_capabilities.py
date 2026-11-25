@@ -86,6 +86,7 @@ class BotPolicyError(Exception):
 TOOL_OPERATIONS: dict[str, str] = {
     "budget_read": "budget:read",
     "maps_route": "maps:read",
+    "web_search": "web:search",
     "read_local_file": "fs:read",
     "list_local_files": "fs:read",
     "search": "fs:read",
