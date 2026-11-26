@@ -6,11 +6,17 @@ from datetime import date, datetime
 from urllib.parse import urlsplit
 
 ACTION = 'booking_browser'
+AVAILABILITY = 'availability'
 FIELDS = ('venue', 'location', 'date', 'time', 'party_size', 'name', 'phone', 'email')
 FORM_FIELDS = FIELDS + ('first_name','last_name')
 PREPARE_LABEL = re.compile(r'^(?:search|find(?: a)?(?: table| time)?|check availability|show (?:times|availability)|availability|select (?:date|time|party size)|choose (?:date|time)|next month|previous month|[0-9]{1,2}|[0-9]{1,2}:[0-9]{2}(?:\s*[ap]m)?)$', re.I)
 COMMIT_LABEL = re.compile(r'\b(?:book|reserve|reservation|confirm|complete|submit|request appointment)\b', re.I)
 FORBIDDEN = re.compile(r'\b(?:pay|payment|purchase|checkout|credit card|card number|cancellation fee|non-refundable|deposit|delete|password|sign in|log in|captcha|verify you are human)\b', re.I)
+
+
+def availability_time(value):
+    return isinstance(value, str) and bool(re.fullmatch(
+        r'(?:0?[1-9]|1[0-2]):[0-5]\d ?[AP]M|(?:[01]\d|2[0-3]):[0-5]\d', value, re.I))
 
 
 def digest(value):
@@ -64,11 +70,22 @@ def task(value):
     if (not isinstance(value, dict) or set(value) - {'id','nonce','url','steps','stage','details','expected','submit'}
             or not re.fullmatch(r'[a-f0-9]{32}', str(value.get('id','')))
             or not re.fullmatch(r'[a-f0-9]{64}', str(value.get('nonce','')))
-            or value.get('stage') not in {'prepare','submit'}):
+            or value.get('stage') not in {'prepare','submit',AVAILABILITY}):
         raise ValueError('Invalid booking browser task.')
     parsed = urlsplit(str(value.get('url','')))
     if parsed.scheme not in {'http','https'} or not parsed.hostname or parsed.username or parsed.password or len(value['url']) > 2048:
         raise ValueError('Invalid booking page URL.')
+    if value['stage'] == AVAILABILITY:
+        wanted = value.get('details')
+        if (set(value) != {'id', 'nonce', 'stage', 'url', 'details', 'steps'}
+                or value['steps'] != [] or not isinstance(wanted, dict)
+                or set(wanted) != {'service', 'date'} or parsed.scheme != 'https'
+                or parsed.port not in (None, 443) or parsed.fragment
+                or re.search(r'[\s\x00-\x1f<>\\]', value['url'])
+                or not clean(wanted['service'], 120)
+                or not details({'date': wanted['date']}).get('date')):
+            raise ValueError('Availability requires a secure booking link, service and date.')
+        return value
     details(value.get('details', {}))
     steps = value.get('steps')
     if not isinstance(steps, list) or len(steps) > 20: raise ValueError('Booking preparation exceeded its step limit.')

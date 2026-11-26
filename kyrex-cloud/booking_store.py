@@ -29,6 +29,16 @@ def cancellation_allowed(data, owner, browser):
         member_bookings.permitted(origin, 'browser:cancel_booking')
 
 
+def availability_allowed(data, owner):
+    if data.get('kind') != schema.AVAILABILITY:
+        return
+    import bots
+    import serve
+    origin = bots.get_bot(data['initiator'])
+    if origin.get('owner') != owner or not bots.is_running(origin) or not serve.coordinator_granted(origin):
+        raise BookingError('The Overwatcher is no longer authorized to check availability.')
+
+
 class BookingStore:
     def __init__(self, path=None):
         self.path=Path(path) if path else data_dir()/'bookings.sqlite3'
@@ -78,6 +88,8 @@ class BookingStore:
                 raise BookingError('That booking proposal changed. Review the latest details before saying yes.')
             if row['state']!='proposed': raise BookingError('This booking has already been answered or submitted. It will not be submitted again.')
             data=connectors.unseal_tokens(row['sealed'])
+            if data.get('kind') == schema.AVAILABILITY:
+                raise BookingError('An availability lookup cannot submit a booking.')
             if time.time()-row['updated']>600 or data.get('assistant_id')!=assistant_id:
                 raise BookingError('The booking review expired. Ask me to check availability again.')
             db.execute('UPDATE bookings SET state=?,updated=? WHERE id=?',('submitting',time.time(),ident))
@@ -85,6 +97,10 @@ class BookingStore:
 
     def wire(self, row, bot, host, stage):
         data=row['data']
+        if (stage == schema.AVAILABILITY) != (data.get('kind') == schema.AVAILABILITY):
+            raise BookingError('Availability can only read open times.')
+        if stage == schema.AVAILABILITY and row['state'] != 'preparing':
+            raise BookingError('The availability lookup is no longer active.')
         if stage=='submit' and row['state']!='submitting': raise BookingError('Only your confirmed proposal may be submitted.')
         if stage=='prepare' and row['state']!='preparing': raise BookingError('Booking preparation is not active.')
         if stage=='verify' and (data.get('kind')!='workout' or row['state']!='submitting' or data.get('cancel_requested')):
@@ -127,13 +143,19 @@ class BookingStore:
             import browser_hosts
             import serve
             record = bots.get_bot(bot)
-            if (spec.get('operation') == 'cancel') != (connectors.unseal_tokens(current['sealed']).get('kind') == 'workout_cancel'):
+            data = connectors.unseal_tokens(current['sealed'])
+            if (spec['stage'] == schema.AVAILABILITY) != (data.get('kind') == schema.AVAILABILITY):
+                raise BookingError('The booking operation changed.')
+            if spec['stage'] == schema.AVAILABILITY and data.get('cancel_requested'):
+                raise BookingError('The availability lookup was stopped.')
+            availability_allowed(data, owner)
+            if (spec.get('operation') == 'cancel') != (data.get('kind') == 'workout_cancel'):
                 raise BookingError('The reviewed workout operation changed.')
-            try: cancellation_allowed(connectors.unseal_tokens(current['sealed']), owner, record)
+            try: cancellation_allowed(data, owner, record)
             except ValueError: raise BookingError('This Bot restricts class cancellation.') from None
             bound = browser_hosts.host_for(owner, bot)
-            saved = connectors.unseal_tokens(current['sealed']).get('browser_binding', {})
-            if spec['stage'] == 'verify' and connectors.unseal_tokens(current['sealed']).get('cancel_requested'):
+            saved = data.get('browser_binding', {})
+            if spec['stage'] == 'verify' and data.get('cancel_requested'):
                 raise BookingError('Booking verification was stopped.')
             if (record.get('owner') != owner or record.get('status') != 'running' or not serve.browser_bot_granted(record)
                     or not bound or bound.host_id != host or not bound.is_available()
@@ -156,12 +178,14 @@ class BookingStore:
             action,spec=workout.wire(text)
             key=hashlib.sha256(spec['nonce'].encode()).hexdigest()
             row=self.get(owner,spec['id'])
+            if (spec['stage'] == schema.AVAILABILITY) != (row['data'].get('kind') == schema.AVAILABILITY): return False
             if (spec.get('operation') == 'cancel') != (row['data'].get('kind') == 'workout_cancel'): return False
             with self.db() as db: wire=db.execute('SELECT * FROM booking_wires WHERE nonce=?',(key,)).fetchone()
             import bots
             import browser_hosts
             import serve
             live=bots.get_bot(bot);bound=browser_hosts.host_for(owner,bot)
+            availability_allowed(row['data'], owner)
             cancellation_allowed(row['data'], owner, live)
             return bool(wire and wire['used']==1 and wire['owner']==owner and wire['bot']==bot and wire['host']==host
                 and wire['sha']==hashlib.sha256(text.encode()).hexdigest()

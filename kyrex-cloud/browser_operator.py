@@ -1137,7 +1137,14 @@ class PlaywrightDriver:
         headless = str(os.environ.get("KYREX_BROWSER_HEADLESS", "1")).strip().lower() \
             not in {"0", "false", "no", "off"}
         self._pw = sync_playwright().start()
-        if self.endpoint:
+        if getattr(self, 'public_booking_lookup', False):
+            # Run this public interaction in a fresh context without the owner profile.
+            self._owns = True
+            self._browser = self._pw.chromium.launch(executable_path=executable,
+                headless=True, args=['--no-sandbox'], timeout=15000)
+            self._context = self._browser.new_context(service_workers='block', accept_downloads=False)
+            self._page = self._context.new_page()
+        elif self.endpoint:
             self._browser = self._pw.chromium.connect_over_cdp(self.endpoint)
             if self.managed:
                 # Reuse the host's persistent default context. A fresh
@@ -1816,6 +1823,11 @@ def run_actions(actions, driver, *, root, allowlist, proto=None,
         # Only this read path adopts the diagnostic launch's service-worker
         # exclusion. The working booking adapter/launch path is unchanged.
         driver.diagnostic_mode = True
+    if (len(actions) == 1 and actions[0]['action'] == BOOKING_ACTION
+            and actions[0]['spec'].get('stage') == 'availability'):
+        if not isinstance(driver, PlaywrightDriver):
+            return _result_error('Availability checks require a managed Chromium Browser Host.')
+        driver.public_booking_lookup = True
     stages = {'dispatch': 'passed'}
     if diagnostic:
         import browser_diagnostics as diagnostics

@@ -3,7 +3,7 @@ import asyncio
 import json
 import re
 import time
-from datetime import datetime
+from datetime import date, datetime
 from urllib.parse import quote, urlsplit
 from zoneinfo import ZoneInfo
 
@@ -105,6 +105,149 @@ async def dispatch(store,row,stage,task_store,cancel=None):
         ref=browser_diagnostics.reference(result.get('diagnostic_ref'))
         raise BookingError((result.get('final_response') or 'The booking form could not be inspected. Nothing was submitted.') + (f' Diagnostic: {ref}.' if ref else ''))
     return row,result
+
+
+AVAILABILITY_INTENT = re.compile(r'\b(?:availability|openings?|open slots?|available|what times?|any (?:times?|(?:nail |salon )?appointments?))\b', re.I)
+APPOINTMENT = re.compile(r'\b(?:appointments?|salon|nails?|mani(?:cure)?|pedi(?:cure)?|haircut|massage|spa)\b', re.I)
+AVAILABILITY_LINK = re.compile(r'https://[^\s<>\[\]()]+')
+
+
+def availability_request(text, conv, assistant_id=None):
+    """Use owner text only. A page summary cannot initiate browser interaction."""
+    if assistant_id and any(m.get('id') == assistant_id and m.get('appointment_lookup')
+                            for m in conv.get('messages', [])):
+        return [text]
+    if re.search(r"\b(?:don't|do not|never mind|cancel|doctor|dentist|medical)\b", text, re.I):
+        return None
+    if (AVAILABILITY_INTENT.search(text) and APPOINTMENT.search(text)
+            and not re.search(r'^\s*(?:find|search|read|check|look up)\b.{0,30}\b(?:emails?|messages?)\b', text, re.I)):
+        return [text]
+    previous = latest(conv).get('appointment_availability')
+    if (isinstance(previous, list) and len(previous) < 4 and len(text) <= 500
+            and (AVAILABILITY_LINK.search(text) or APPOINTMENT.search(text)
+                 or re.search(r'\b(?:today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{4}-\d\d-\d\d)\b', text, re.I))
+            and not UNRELATED.search(text) and not START.search(text)):
+        return [*previous, text]
+    return None
+
+
+async def availability_details(provider, model, messages, now, cancel):
+    from web_search import public_url
+
+    values = await model_json(provider, model,
+        'Extract the exact salon or appointment service name and date supplied by the owner. '
+        'Return {"service":"verbatim service name or empty","date":"YYYY-MM-DD or empty",'
+        '"date_quote":"verbatim date phrase or empty"}. Resolve relative dates from today. '
+        'A salon or business name is not a service. Do not default to a date or service.',
+        {'today': now.date().isoformat(), 'owner_messages': messages}, cancel)
+    service = schema.clean(values.get('service', ''), 120)
+    day = schema.clean(values.get('date', ''), 10)
+    quote = schema.clean(values.get('date_quote', ''), 120)
+    if not service or not any(service.casefold() in message.casefold() for message in messages):
+        service = ''
+    if not quote or not any(quote.casefold() in message.casefold() for message in messages):
+        day = ''
+    if day:
+        needed = date.fromisoformat(day)
+        if needed.isoformat() != day or needed < now.date():
+            raise BookingError('Please give me a current or future appointment date.')
+        if re.fullmatch(r'\d{4}-\d\d-\d\d', quote) and day != quote:
+            raise BookingError('I could not resolve that date. Please provide the exact date.')
+    observed = [match.rstrip('.,;!?') for message in messages for match in AVAILABILITY_LINK.findall(message)]
+    links = [link for link in observed if public_url(link) and not urlsplit(link).fragment
+             and urlsplit(link).port in (None, 443)]
+    return {'service': service, 'date': day}, links[-1] if links else ''
+
+
+async def availability_stream(chat, owner, conv, text, messages, request_id, cancel, workspace_id):
+    import bot_provider
+
+    selected = chat.resolve_bot_for_user(owner, conv['bot_id'])
+    if (selected.get('owner') != owner or not serve.coordinator_granted(selected)
+            or (workspace_id is not chat._WORKSPACE_UNSET and str(workspace_id or '').strip())):
+        raise chat.ChatUnavailable('Use your own Overwatcher conversation for an appointment availability check.')
+    cid = conv['conversation_id']
+    user_id = f'turn-{request_id}-user' if request_id else None
+    answer_id = f'turn-{request_id}-assistant' if request_id else None
+    previous = next((m for m in conv.get('messages', []) if answer_id and m.get('id') == answer_id), None)
+    if previous and previous.get('role') == 'assistant':
+        if not any(m.get('id') == user_id and m.get('role') == 'user' and m.get('content') == text
+                   for m in conv.get('messages', [])):
+            raise chat.ChatUnavailable('That availability request ID already belongs to another message.')
+        yield {'type': 'conversation', 'conversation_id': cid}
+        yield {'type': 'status', 'status': 'complete', 'content': previous['content']}
+        return
+    if cancel is not None and cancel.is_set():
+        yield {'type': 'status', 'status': 'cancelled', 'content': ''}
+        return
+    chat._append_message(owner, conv, 'user', text, identity=user_id)
+    chat._write(owner, conv)
+    yield {'type': 'conversation', 'conversation_id': cid}
+    row = None
+    collecting = False
+    try:
+        cfg = bot_provider.resolve_bot_provider(owner, selected)
+        if not cfg.get('api_key') or not cfg.get('model'):
+            raise BookingError('Set your Overwatcher’s model before checking appointment times.')
+        provider = chat.get_provider(cfg['provider'], cfg['api_key'], base_url=cfg.get('base_url') or None,
+            extra_headers=cfg.get('headers') or None, session_id=chat._opencode_session_for(owner, conv))
+        details, url = await availability_details(provider, cfg['model'], messages, chat._user_now(owner), cancel)
+        missing = [label for value, label in [(details['service'], 'the exact service name'),
+                   (details['date'], 'the date'), (url, 'the direct booking link')] if not value]
+        if missing:
+            answer = 'To check live appointments, send me ' + ' and '.join(missing) + '.'
+            collecting = True
+        else:
+            from browser_operator import domain_allowed
+            target, _ = browser(owner)
+            if not domain_allowed(url, target['browser_allowlist'])[0]:
+                raise BookingError('Add the booking site to your Browser Bot’s allowed sites, then ask again.')
+            store = booking_store.BookingStore()
+            row = store.create(owner, cid, f'{cid}:availability:{request_id}' if request_id else None)
+            if row['state'] != 'collecting':
+                raise BookingError('This availability check has already started. Ask again for a fresh check.')
+            row = store.update(row, {'kind': schema.AVAILABILITY, 'initiator': selected['id'], 'details': details, 'url': url}, 'preparing')
+            yield {'type': 'progress', 'payload': {'stage': 'Checking the booking site for open appointment times…'}}
+            row, result = await dispatch(store, row, schema.AVAILABILITY, chat._task_store(), cancel)
+            observed = result.get('availability', {})
+            if result.get('status') != 'no_changes' or not isinstance(observed, dict) or any(
+                    observed.get(key) != value for key, value in details.items()):
+                raise BookingError('I couldn’t verify live times on this booking page. It may need a different link or widget.')
+            times = observed.get('times')
+            if not isinstance(times, list) or len(times) > 30 or any(not schema.availability_time(t) for t in times):
+                raise BookingError('The Browser Host did not return verifiable appointment times.')
+            row = store.update(row, row['data'], 'completed')
+            date_label = date.fromisoformat(details['date']).strftime('%A, %B %-d, %Y')
+            if times:
+                answer = f"Open times shown for {details['service']} on {date_label} (venue local time): {', '.join(times)}."
+            else:
+                answer = f"I couldn’t verify open times for {details['service']} on {date_label}. The page did not show a verified list of slots."
+            answer += f'\n\n[Booking page](<{url}>)'
+    except asyncio.CancelledError:
+        if row:
+            store.request_cancel(owner, row['id'])
+        yield {'type': 'status', 'status': 'cancelled', 'content': ''}
+        return
+    except (BookingError, bot_provider.BotProviderError) as exc:
+        answer = str(exc)
+    except Exception:
+        answer = 'The availability check could not finish. No appointment was booked.'
+    finally:
+        if row and row['state'] == 'preparing':
+            try:
+                store.update(row, row['data'], 'blocked')
+            except BookingError:
+                pass
+    if cancel is not None and cancel.is_set():
+        yield {'type': 'status', 'status': 'cancelled', 'content': ''}
+        return
+    current = chat.get_conversation(owner, cid) or conv
+    message = chat._append_message(owner, current, 'assistant', answer, identity=answer_id)
+    message['appointment_lookup'] = True
+    if collecting:
+        message['appointment_availability'] = messages
+    chat._write(owner, current)
+    yield {'type': 'status', 'status': 'complete', 'content': answer}
 
 
 def _booking_json_object(raw):

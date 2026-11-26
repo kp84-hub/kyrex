@@ -356,3 +356,53 @@ def test_nonce_cannot_be_forged_reused_or_used_after_cancellation(rig):
     with pytest.raises(booking_store.BookingError): store.authorize('alice','browser-bot','test-host',wire)
     store.request_cancel('alice',row['id'])
     assert not store.active('alice','browser-bot','test-host',wire)
+
+
+@pytest.mark.parametrize('wrong_date', [False, True])
+def test_appointment_availability_through_overwatcher_needs_a_real_booking_link(rig, monkeypatch, wrong_date):
+    import bot_provider
+    owner = 'alice'
+    cid, state, path, task = rig
+    bots.add_bot('overwatcher', 'The Overwatcher', 'openai:test-model', str(path / 'rift'),
+                 owner=owner, status='running', policy=serve.coordinator_preset_policy())
+    conversation = chat.create_conversation(owner, bot_id='overwatcher')['conversation_id']
+    monkeypatch.setattr(bot_provider, 'resolve_bot_provider',
+        lambda *_: {'provider': 'openai', 'api_key': 'fixture-only', 'model': 'fixture'})
+
+    async def provider(**kwargs):
+        payload = json.loads(kwargs['messages'][1]['content'])
+        assert kwargs['tools'] is None
+        assert 'Gel manicure' in ' '.join(payload['owner_messages'])
+        return {'content': '{"service":"Gel manicure","date":"2030-06-14","date_quote":"2030-06-14"}'}
+
+    def browser(**kwargs):
+        store = booking_store.BookingStore()
+        wire = kwargs['task_text']
+        store.authorize(owner, kwargs['bot_id'], kwargs['host_id'], wire)
+        assert store.active(owner, kwargs['bot_id'], kwargs['host_id'], wire)
+        spec = json.loads(wire)[schema.ACTION]
+        assert spec['stage'] == schema.AVAILABILITY and spec['steps'] == []
+        assert spec['details'] == {'service': 'Gel manicure', 'date': '2030-06-14'}
+        row = store.get(owner, spec['id'])
+        with pytest.raises(booking_store.BookingError, match='only read open times'):
+            store.wire(row, kwargs['bot_id'], kwargs['host_id'], 'submit')
+        with pytest.raises(booking_store.BookingError):
+            store.get('bob', spec['id'])
+        state['calls'].append(spec)
+        day = '2030-06-15' if wrong_date else spec['details']['date']
+        return {'mode': schema.ACTION, 'status': 'no_changes',
+                'availability': {**spec['details'], 'date': day, 'times': ['2:30 PM']}}, None
+
+    monkeypatch.setattr(chat, 'get_provider', lambda *args, **kwargs: SimpleNamespace(chat=provider))
+    monkeypatch.setattr(browser_host_bridge, 'request_browser_dispatch', browser)
+    current_rig = (conversation, state, path, task)
+    first = turn(current_rig, 'Check appointment openings for a Gel manicure on 2030-06-14', 'missing-link')[-1]
+    assert 'direct booking link' in first['content']
+    assert not state['calls']
+    times = turn(current_rig, URL, 'openings')[-1]
+    assert len(state['calls']) == 1 and not state['posts']
+    assert ('2:30 PM' in times['content']) is not wrong_date
+    assert ('couldn’t verify' in times['content']) is wrong_date
+    assert turn(current_rig, URL, 'openings')[-1]['content'] == times['content']
+    assert len(state['calls']) == 1
+    assert not any(m.get('booking') for m in chat.get_conversation(owner, conversation)['messages'])

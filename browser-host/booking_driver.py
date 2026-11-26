@@ -144,11 +144,143 @@ ATOMIC_SUBMIT = """(element, expected) => {
 }"""
 
 
+AVAILABILITY_DOM = "(" + DOM + """)({labelFor: element => {
+    const explicit = element.getAttribute('aria-label');
+    if (explicit) return explicit;
+    const label = element.labels?.[0]?.cloneNode(true);
+    if (!label) return '';
+    label.querySelectorAll('select,input,textarea,button').forEach(control => control.remove());
+    return label.textContent.trim();
+}})"""
+
+
+def _availability_control(current, predicate):
+    matches = [item for item in current['controls'] if not item['disabled']
+               and predicate(item)]
+    if len(matches) != 1:
+        raise ValueError('The booking page does not expose a supported service and date selector.')
+    return matches[0]
+
+
+def _available_times(current, frame):
+    result = []
+    for control in current['controls']:
+        if (control['frame'] != frame or control['disabled'] or control['tag'] != 'select'
+                or not re.fullmatch(r'available (?:appointment )?(?:times|time slots)', control['label'], re.I)):
+            continue
+        for option in control['options']:
+            label = ' '.join(option['label'].split())
+            if (option['value'] and not option['disabled']
+                    and schema.availability_time(label)
+                    and label not in result):
+                result.append(label)
+    return result[:30]
+
+
+def run_availability(driver, proto, spec, allowed):
+    """Select native filters in the public context and return observed slots."""
+    url = spec['url']
+    source = urlsplit(url)
+
+    def same_site(target):
+        try:
+            parsed = urlsplit(target)
+            return (parsed.scheme == 'https' and parsed.hostname == source.hostname
+                    and parsed.port in (None, 443) and allowed(target))
+        except ValueError:
+            return False
+
+    def check_authority():
+        if not proto.operation('browser.booking', spec['id'], 'Read appointment availability', ''):
+            raise ValueError('The appointment availability check is no longer authorized.')
+
+    def guard(route):
+        req = route.request
+        parsed = urlsplit(req.url)
+        target = unquote(parsed.path + '?' + parsed.query)
+        write_path = re.search(
+            r'/(?:submit|confirm|cancel|delete|checkout|pay)(?:[-/?]|$)'
+            r'|[?&](?:action|intent)=(?:confirm|submit|book|reserve|cancel|pay)\b', target, re.I)
+        if req.method.upper() not in {'GET', 'HEAD', 'OPTIONS'} or not same_site(req.url) or write_path:
+            route.abort()
+        else:
+            route.fallback()
+
+    def observe():
+        current = snapshot(driver, same_site, dom_for_frame=lambda _: AVAILABILITY_DOM)
+        if current['blocked']:
+            raise ValueError('The booking page requires private sign-in or a human verification step.')
+        return current
+
+    check_authority()
+    context = driver._context
+    context.route_web_socket('**/*', lambda socket: socket.close())
+    # Keep the guard installed until the isolated context closes, including
+    # requests a page queues after the result is returned.
+    context.route('**/*', guard)
+    driver.navigate(url)
+    current = observe()
+
+    def service_control(current):
+        return _availability_control(current, lambda item: item['tag'] == 'select'
+            and re.fullmatch(r'(?:select |choose )?(?:appointment )?service(?: type)?', item['label'], re.I))
+
+    def date_control(current):
+        return _availability_control(current, lambda item: item['tag'] == 'input' and item['type'] == 'date')
+
+    service = service_control(current)
+    date = date_control(current)
+    if service['frame'] != date['frame']:
+        raise ValueError('Service and date must belong to the same booking form.')
+    wanted = spec['details']
+    options = [o for o in service['options'] if o['value'] and not o['disabled']
+               and ' '.join(o['label'].split()).casefold() == ' '.join(wanted['service'].split()).casefold()]
+    if len(options) != 1:
+        raise ValueError('The booking page does not show an exact match for that service. Use the service name listed on the booking page.')
+    value = options[0]['value']
+    original = _available_times(current, service['frame'])
+    service_input = locate(driver, service, same_site)
+    date_input = locate(driver, date, same_site)
+    changed = service_input.input_value() != value or date_input.input_value() != wanted['date']
+    check_authority()
+    if service_input.input_value() != value:
+        service_input.select_option(value, timeout=5000)
+    after_service = observe()
+    date = date_control(after_service)
+    date_input = locate(driver, date, same_site)
+    check_authority()
+    if date_input.input_value() != wanted['date']:
+        original = _available_times(after_service, date['frame']) or original
+        date_input.fill(wanted['date'], timeout=5000)
+    # Never mistake a previous selection's still-rendered options for results.
+    deadline = time.monotonic() + 5
+    while True:
+        latest = observe()
+        service = service_control(latest)
+        date = date_control(latest)
+        if (service['frame'] == date['frame']
+                and locate(driver, service, same_site).input_value() == value
+                and locate(driver, date, same_site).input_value() == wanted['date']):
+            times = _available_times(latest, service['frame'])
+            if times and (not changed or times != original):
+                check_authority()
+                return {'status': 'no_changes', 'mode': 'booking_browser',
+                        'availability': {'service': wanted['service'], 'date': wanted['date'], 'times': times}}
+        if time.monotonic() >= deadline:
+            break
+        driver._page.wait_for_timeout(250)
+    check_authority()
+    return {'status': 'no_changes', 'mode': 'booking_browser',
+            'availability': {'service': wanted['service'], 'date': wanted['date'], 'times': []}}
+
+
 def run(driver, proto, spec, *, allowlist, root):
     from browser_operator import domain_allowed
     spec=schema.task(spec)
     allowed=lambda u: domain_allowed(u,allowlist)[0]
     if not allowed(spec['url']): raise ValueError('The booking website is outside the permitted sites.')
+    if spec['stage'] == schema.AVAILABILITY:
+        return run_availability(driver, proto, spec, allowed)
     if not proto.operation('browser.booking',spec['id'],'Prepare or submit the owner-selected booking',''):
         raise ValueError('Booking workflow is not authorized.')
     # Form change handlers cannot silently create a booking before yes.
