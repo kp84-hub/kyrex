@@ -215,64 +215,63 @@ def run_availability(driver, proto, spec, allowed):
     check_authority()
     context = driver._context
     context.route_web_socket('**/*', lambda socket: socket.close())
+    # Keep the guard installed until the isolated context closes, including
+    # requests a page queues after the result is returned.
     context.route('**/*', guard)
-    try:
-        driver.navigate(url)
-        current = observe()
+    driver.navigate(url)
+    current = observe()
 
-        def service_control(current):
-            return _availability_control(current, lambda item: item['tag'] == 'select'
-                and re.fullmatch(r'(?:select |choose )?(?:appointment )?service(?: type)?', item['label'], re.I))
+    def service_control(current):
+        return _availability_control(current, lambda item: item['tag'] == 'select'
+            and re.fullmatch(r'(?:select |choose )?(?:appointment )?service(?: type)?', item['label'], re.I))
 
-        def date_control(current):
-            return _availability_control(current, lambda item: item['tag'] == 'input' and item['type'] == 'date')
+    def date_control(current):
+        return _availability_control(current, lambda item: item['tag'] == 'input' and item['type'] == 'date')
 
-        service = service_control(current)
-        date = date_control(current)
-        if service['frame'] != date['frame']:
-            raise ValueError('Service and date must belong to the same booking form.')
-        wanted = spec['details']
-        options = [o for o in service['options'] if o['value'] and not o['disabled']
-                   and ' '.join(o['label'].split()).casefold() == ' '.join(wanted['service'].split()).casefold()]
-        if len(options) != 1:
-            raise ValueError('The booking page does not show an exact match for that service. Use the service name listed on the booking page.')
-        value = options[0]['value']
-        original = _available_times(current, service['frame'])
-        service_input = locate(driver, service, same_site)
-        date_input = locate(driver, date, same_site)
-        changed = service_input.input_value() != value or date_input.input_value() != wanted['date']
-        check_authority()
-        if service_input.input_value() != value:
-            service_input.select_option(value, timeout=5000)
-        after_service = observe()
-        date = date_control(after_service)
-        date_input = locate(driver, date, same_site)
-        check_authority()
-        if date_input.input_value() != wanted['date']:
-            original = _available_times(after_service, date['frame']) or original
-            date_input.fill(wanted['date'], timeout=5000)
-        # Never mistake a previous selection's still-rendered options for results.
-        deadline = time.monotonic() + 5
-        while True:
-            latest = observe()
-            service = service_control(latest)
-            date = date_control(latest)
-            if (service['frame'] == date['frame']
-                    and locate(driver, service, same_site).input_value() == value
-                    and locate(driver, date, same_site).input_value() == wanted['date']):
-                times = _available_times(latest, service['frame'])
-                if times and (not changed or times != original):
-                    check_authority()
-                    return {'status': 'no_changes', 'mode': 'booking_browser',
-                            'availability': {'service': wanted['service'], 'date': wanted['date'], 'times': times}}
-            if time.monotonic() >= deadline:
-                break
-            driver._page.wait_for_timeout(250)
-        check_authority()
-        return {'status': 'no_changes', 'mode': 'booking_browser',
-                'availability': {'service': wanted['service'], 'date': wanted['date'], 'times': []}}
-    finally:
-        context.unroute('**/*', guard)
+    service = service_control(current)
+    date = date_control(current)
+    if service['frame'] != date['frame']:
+        raise ValueError('Service and date must belong to the same booking form.')
+    wanted = spec['details']
+    options = [o for o in service['options'] if o['value'] and not o['disabled']
+               and ' '.join(o['label'].split()).casefold() == ' '.join(wanted['service'].split()).casefold()]
+    if len(options) != 1:
+        raise ValueError('The booking page does not show an exact match for that service. Use the service name listed on the booking page.')
+    value = options[0]['value']
+    original = _available_times(current, service['frame'])
+    service_input = locate(driver, service, same_site)
+    date_input = locate(driver, date, same_site)
+    changed = service_input.input_value() != value or date_input.input_value() != wanted['date']
+    check_authority()
+    if service_input.input_value() != value:
+        service_input.select_option(value, timeout=5000)
+    after_service = observe()
+    date = date_control(after_service)
+    date_input = locate(driver, date, same_site)
+    check_authority()
+    if date_input.input_value() != wanted['date']:
+        original = _available_times(after_service, date['frame']) or original
+        date_input.fill(wanted['date'], timeout=5000)
+    # Never mistake a previous selection's still-rendered options for results.
+    deadline = time.monotonic() + 5
+    while True:
+        latest = observe()
+        service = service_control(latest)
+        date = date_control(latest)
+        if (service['frame'] == date['frame']
+                and locate(driver, service, same_site).input_value() == value
+                and locate(driver, date, same_site).input_value() == wanted['date']):
+            times = _available_times(latest, service['frame'])
+            if times and (not changed or times != original):
+                check_authority()
+                return {'status': 'no_changes', 'mode': 'booking_browser',
+                        'availability': {'service': wanted['service'], 'date': wanted['date'], 'times': times}}
+        if time.monotonic() >= deadline:
+            break
+        driver._page.wait_for_timeout(250)
+    check_authority()
+    return {'status': 'no_changes', 'mode': 'booking_browser',
+            'availability': {'service': wanted['service'], 'date': wanted['date'], 'times': []}}
 
 
 def run(driver, proto, spec, *, allowlist, root):

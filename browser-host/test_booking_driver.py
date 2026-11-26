@@ -218,7 +218,8 @@ def test_availability_selects_filters_reads_enabled_slots_and_blocks_updates(bro
                         root=live.session_dir)
     assert result['availability'] == {
         'service': 'Gel manicure', 'date': '2030-06-14', 'times': ['10:00 AM', '2:30 PM']}
-    assert not state['posts']
+    live._page.evaluate("fetch('/save', {method:'POST', body:'preference=gel'}).catch(() => {})")
+    assert not state['posts'], 'The network guard must stay active until browser teardown.'
 
 
 def test_availability_does_not_report_old_slots_when_service_or_date_changes(browser):
