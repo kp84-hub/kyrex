@@ -135,16 +135,22 @@ async def availability_details(provider, model, messages, now, cancel):
     from web_search import public_url
 
     values = await model_json(provider, model,
-        'Extract the exact salon or appointment service name and date supplied by the owner. '
-        'Return {"service":"verbatim service name or empty","date":"YYYY-MM-DD or empty",'
-        '"date_quote":"verbatim date phrase or empty"}. Resolve relative dates from today. '
-        'A salon or business name is not a service. Do not default to a date or service.',
+        'Extract the appointment service, date, business name and locality explicitly supplied by the owner. '
+        'Return {"service":"exact service or empty","date":"YYYY-MM-DD or empty",'
+        '"date_quote":"verbatim date phrase or empty","venue":"verbatim business name or empty",'
+        '"location":"verbatim city or locality or empty"}. Resolve relative dates from today. '
+        'A salon or business name is not a service. A generic nail appointment is not an exact service. '
+        'Do not infer missing details.',
         {'today': now.date().isoformat(), 'owner_messages': messages}, cancel)
-    service = schema.clean(values.get('service', ''), 120)
+    def supplied(key):
+        value = schema.clean(values.get(key, ''), 120)
+        return value if value and any(value.casefold() in message.casefold() for message in messages) else ''
+
+    service = supplied('service')
+    if re.fullmatch(r'(?:a )?(?:nails?|salon)?\s*appointments?', service, re.I):
+        service = ''
     day = schema.clean(values.get('date', ''), 10)
     quote = schema.clean(values.get('date_quote', ''), 120)
-    if not service or not any(service.casefold() in message.casefold() for message in messages):
-        service = ''
     if not quote or not any(quote.casefold() in message.casefold() for message in messages):
         day = ''
     if day:
@@ -154,9 +160,64 @@ async def availability_details(provider, model, messages, now, cancel):
         if re.fullmatch(r'\d{4}-\d\d-\d\d', quote) and day != quote:
             raise BookingError('I could not resolve that date. Please provide the exact date.')
     observed = [match.rstrip('.,;!?') for message in messages for match in AVAILABILITY_LINK.findall(message)]
-    links = [link for link in observed if public_url(link) and not urlsplit(link).fragment
-             and urlsplit(link).port in (None, 443)]
-    return {'service': service, 'date': day}, links[-1] if links else ''
+    links = [link for link in observed if public_url(link) and schema.public_booking_link(link)]
+    return {'service': service, 'date': day}, links[-1] if links else '', {
+        'venue': supplied('venue'), 'location': supplied('location')}
+
+
+def _site_host(url):
+    return (urlsplit(url).hostname or '').removeprefix('www.')
+
+
+async def official_appointment_site(owner, bot_id, venue, cancel):
+    from web_search import SearchConnection, SearchError, bot_allowed, public_url
+
+    def permitted():
+        return not (cancel is not None and cancel.is_set()) and bot_allowed(owner, bot_id)
+
+    if not permitted():
+        raise BookingError('Web search is unavailable for this Bot. I couldn’t look up the booking site.')
+    if not all(re.fullmatch(r"[\w .,&’'-]+", value) for value in venue.values()):
+        raise BookingError('I need the public business name and city to look up its website.')
+    brand = re.sub(r'[^a-z0-9]', '', venue['venue'].casefold())
+    if len(brand) < 4:
+        raise BookingError('I need the full business name to identify its official website.')
+    try:
+        found = await asyncio.to_thread(SearchConnection().search, owner,
+            f"{venue['venue']} {venue['location']} official website", authorize=permitted)
+    except SearchError as exc:
+        raise BookingError(str(exc)) from None
+
+    sites = {}
+    for result in found.get('results', []):
+        url = result.get('url')
+        if not public_url(url) or not schema.public_booking_link(url):
+            continue
+        host = _site_host(url)
+        # Index snippets can nominate a name-matched domain. The Browser Host
+        # still has to verify the real site and locality before taking a link.
+        if len(host.split('.')) == 2 and re.sub(r'-', '', host.split('.')[0]) == brand:
+            parsed = urlsplit(url)
+            sites.setdefault(host, f'https://{parsed.netloc}/')
+    if len(sites) != 1:
+        raise BookingError('I couldn’t verify a single official website for that business and city.')
+    return next(iter(sites.values()))
+
+
+def _verified_discovery(result, site):
+    from web_search import public_url
+
+    evidence = result.get('booking_discovery')
+    if result.get('status') != 'no_changes' or not isinstance(evidence, dict):
+        raise BookingError('I couldn’t verify the official booking page in your Browser Host.')
+    source = evidence.get('url')
+    if not public_url(source) or not schema.public_booking_link(source) or _site_host(source) != _site_host(site):
+        raise BookingError('I couldn’t verify the official booking page in your Browser Host.')
+    phone = evidence.get('phone') or ''
+    url = evidence.get('booking_url') or ''
+    phone = phone if isinstance(phone, str) and re.fullmatch(r'\(\d{3}\) \d{3}-\d{4}', phone) else ''
+    url = url if public_url(url) and schema.public_booking_link(url) else ''
+    return source, phone, url
 
 
 async def availability_stream(chat, owner, conv, text, messages, request_id, cancel, workspace_id):
@@ -185,28 +246,58 @@ async def availability_stream(chat, owner, conv, text, messages, request_id, can
     yield {'type': 'conversation', 'conversation_id': cid}
     row = None
     collecting = False
+    source = phone = ''
+    store = None
     try:
         cfg = bot_provider.resolve_bot_provider(owner, selected)
         if not cfg.get('api_key') or not cfg.get('model'):
             raise BookingError('Set your Overwatcher’s model before checking appointment times.')
         provider = chat.get_provider(cfg['provider'], cfg['api_key'], base_url=cfg.get('base_url') or None,
             extra_headers=cfg.get('headers') or None, session_id=chat._opencode_session_for(owner, conv))
-        details, url = await availability_details(provider, cfg['model'], messages, chat._user_now(owner), cancel)
-        missing = [label for value, label in [(details['service'], 'the exact service name'),
-                   (details['date'], 'the date'), (url, 'the direct booking link')] if not value]
-        if missing:
-            answer = 'To check live appointments, send me ' + ' and '.join(missing) + '.'
-            collecting = True
-        else:
-            from browser_operator import domain_allowed
+        details, url, venue = await availability_details(provider, cfg['model'], messages, chat._user_now(owner), cancel)
+        from browser_operator import domain_allowed
+
+        def start_lookup(link, fields):
+            nonlocal store, row
             target, _ = browser(owner)
-            if not domain_allowed(url, target['browser_allowlist'])[0]:
-                raise BookingError('Add the booking site to your Browser Bot’s allowed sites, then ask again.')
-            store = booking_store.BookingStore()
-            row = store.create(owner, cid, f'{cid}:availability:{request_id}' if request_id else None)
-            if row['state'] != 'collecting':
-                raise BookingError('This availability check has already started. Ask again for a fresh check.')
-            row = store.update(row, {'kind': schema.AVAILABILITY, 'initiator': selected['id'], 'details': details, 'url': url}, 'preparing')
+            if not domain_allowed(link, target['browser_allowlist'])[0]:
+                raise BookingError(f'Allow {_site_host(link)} in your Browser Bot’s allowed sites to check it.')
+            if row is None:
+                store = booking_store.BookingStore()
+                row = store.create(owner, cid, f'{cid}:availability:{request_id}' if request_id else None)
+                if row['state'] != 'collecting':
+                    row = None
+                    raise BookingError('This availability check has already started. Ask again for a fresh check.')
+            row = store.update(row, {**row['data'], 'kind': schema.AVAILABILITY,
+                                     'initiator': selected['id'], 'details': fields, 'url': link}, 'preparing')
+
+        if not url and all(venue.values()):
+            yield {'type': 'progress', 'payload': {'stage': 'Finding the official booking page…'}}
+            site = await official_appointment_site(owner, selected['id'], venue, cancel)
+            if cancel is not None and cancel.is_set():
+                raise asyncio.CancelledError()
+            start_lookup(site, venue)
+            row, result = await dispatch(store, row, schema.AVAILABILITY, chat._task_store(), cancel)
+            source, phone, url = _verified_discovery(result, site)
+        missing = [label for value, label in [(details['service'], 'the exact service name'),
+                   (details['date'], 'the date')] if not value]
+        if not url:
+            if source:
+                answer = 'I checked the official website and couldn’t verify an online booking form or live openings.'
+                row = store.update(row, row['data'], 'completed')
+            else:
+                absent = [label for key, label in [('venue', 'the business name'), ('location', 'the city')]
+                          if not venue[key]]
+                answer = 'To look up the booking page, send me ' + ' and '.join(absent) + '.'
+                collecting = True
+        elif missing:
+            answer = 'I found the booking page. To check live appointments, send me ' + ' and '.join(missing) + '.' if source else (
+                'To check live appointments, send me ' + ' and '.join(missing) + '.')
+            collecting = True
+            if row:
+                row = store.update(row, row['data'], 'completed')
+        else:
+            start_lookup(url, details)
             yield {'type': 'progress', 'payload': {'stage': 'Checking the booking site for open appointment times…'}}
             row, result = await dispatch(store, row, schema.AVAILABILITY, chat._task_store(), cancel)
             observed = result.get('availability', {})
@@ -241,6 +332,10 @@ async def availability_stream(chat, owner, conv, text, messages, request_id, can
     if cancel is not None and cancel.is_set():
         yield {'type': 'status', 'status': 'cancelled', 'content': ''}
         return
+    if source:
+        if phone and not answer.startswith('Open times shown'):
+            answer += f' You can call the business at **{phone}** to check availability.'
+        answer += f'\n\n[Official website](<{source}>)'
     current = chat.get_conversation(owner, cid) or conv
     message = chat._append_message(owner, current, 'assistant', answer, identity=answer_id)
     message['appointment_lookup'] = True

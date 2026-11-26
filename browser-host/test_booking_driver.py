@@ -232,3 +232,29 @@ def test_availability_does_not_report_old_slots_when_service_or_date_changes(bro
     result = driver.run(live, proto, availability_spec(), allowlist=['restaurant.example'],
                         root=live.session_dir)
     assert result['availability']['times'] == []
+
+
+@pytest.mark.parametrize('href,expected', [
+    ('https://provider.example/viewphoto/123', ''),
+    ('https://provider.example/booking/123', 'https://provider.example/booking/123'),
+])
+def test_discovery_does_not_confuse_a_menu_image_with_a_booking_page(href, expected):
+    home = {'title': 'Fixture Salon · Fixture City', 'url': 'https://fixturesalon.example/',
+            'text': 'Fixture Salon in Fixture City', 'controls': [
+                {'tag': 'a', 'label': 'Contact Us', 'href': 'https://fixturesalon.example/contact/'}]}
+    contact = {'title': 'Contact Us', 'url': 'https://fixturesalon.example/contact/',
+               'text': 'Fixture Salon in Fixture City · (919) 555-0101', 'controls': [
+                   {'tag': 'a', 'label': 'Book Online', 'href': href}]}
+    visits = []
+    response = driver.discover_availability(
+        SimpleNamespace(navigate=visits.append), home, {'venue': 'Fixture Salon', 'location': 'Fixture City'},
+        lambda value: value.startswith('https://fixturesalon.example/'), lambda: contact, lambda: None)
+    assert visits == [contact['url']]
+    assert response['booking_discovery'] == {'url': contact['url'], 'phone': '(919) 555-0101',
+                                              'booking_url': expected}
+
+
+def test_site_discovery_rejects_another_business_with_a_booking_button():
+    with pytest.raises(ValueError, match='verify that business'):
+        driver.discover_availability(None, {'title': 'Other Salon', 'text': 'Other City'},
+            {'venue': 'Fixture Salon', 'location': 'Fixture City'}, None, None, None)

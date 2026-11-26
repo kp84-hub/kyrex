@@ -397,7 +397,7 @@ def test_appointment_availability_through_overwatcher_needs_a_real_booking_link(
     monkeypatch.setattr(browser_host_bridge, 'request_browser_dispatch', browser)
     current_rig = (conversation, state, path, task)
     first = turn(current_rig, 'Check appointment openings for a Gel manicure on 2030-06-14', 'missing-link')[-1]
-    assert 'direct booking link' in first['content']
+    assert 'the business name and the city' in first['content']
     assert not state['calls']
     times = turn(current_rig, URL, 'openings')[-1]
     assert len(state['calls']) == 1 and not state['posts']
@@ -406,3 +406,64 @@ def test_appointment_availability_through_overwatcher_needs_a_real_booking_link(
     assert turn(current_rig, URL, 'openings')[-1]['content'] == times['content']
     assert len(state['calls']) == 1
     assert not any(m.get('booking') for m in chat.get_conversation(owner, conversation)['messages'])
+
+
+@pytest.mark.parametrize('provider_link', ['', URL, 'https://another.example/book'])
+def test_no_link_searches_the_official_site_and_reports_only_observed_results(rig, monkeypatch, provider_link):
+    import bot_provider
+    import web_search
+    _, state, path, task = rig
+    owner = 'alice'
+    bot_id = 'overwatcher'
+    bots.add_bot(bot_id, 'The Overwatcher', 'openai:test-model', str(path / 'rift'),
+                 owner=owner, status='running', policy=serve.coordinator_preset_policy())
+    conversation = chat.create_conversation(owner, bot_id=bot_id)['conversation_id']
+    monkeypatch.setattr(bot_provider, 'resolve_bot_provider',
+        lambda *_: {'provider': 'openai', 'api_key': 'fixture-only', 'model': 'fixture'})
+
+    async def provider(**kwargs):
+        return {'content': json.dumps({'venue': 'Restaurant', 'location': 'Fixture City',
+            'service': 'Gel manicure', 'date': '2030-06-14', 'date_quote': '2030-06-14'})}
+
+    searches = []
+
+    def search(connection, user, query, *, authorize):
+        assert user == owner and authorize()
+        searches.append(query)
+        return {'results': [
+            {'url': 'https://directory.example/restaurant-fixture'},
+            {'url': 'https://restaurant.unrelated.example/'},
+            {'url': 'https://restaurant.example/contact'},
+        ]}
+
+    def browser(**kwargs):
+        store = booking_store.BookingStore()
+        wire = kwargs['task_text']
+        store.authorize(owner, kwargs['bot_id'], kwargs['host_id'], wire)
+        assert store.active(owner, kwargs['bot_id'], kwargs['host_id'], wire)
+        spec = json.loads(wire)[schema.ACTION]
+        assert spec['stage'] == schema.AVAILABILITY and spec['steps'] == []
+        state['calls'].append(spec)
+        if 'venue' in spec['details']:
+            assert spec['url'] == 'https://restaurant.example/'
+            assert spec['details'] == {'venue': 'Restaurant', 'location': 'Fixture City'}
+            return {'mode': schema.ACTION, 'status': 'no_changes', 'booking_discovery': {
+                'url': 'https://restaurant.example/contact', 'phone': '(919) 555-0101',
+                'booking_url': provider_link}}, None
+        assert spec['url'] == URL and spec['details'] == {'service': 'Gel manicure', 'date': '2030-06-14'}
+        return {'mode': schema.ACTION, 'status': 'no_changes',
+                'availability': {**spec['details'], 'times': ['2:30 PM']}}, None
+
+    monkeypatch.setattr(web_search.SearchConnection, 'search', search)
+    monkeypatch.setattr(chat, 'get_provider', lambda *args, **kwargs: SimpleNamespace(chat=provider))
+    monkeypatch.setattr(browser_host_bridge, 'request_browser_dispatch', browser)
+    request = 'Check appointment openings at Restaurant in Fixture City for a Gel manicure on 2030-06-14'
+    answer = turn((conversation, state, path, task), request, 'look-up')[-1]['content']
+    assert searches == ['Restaurant Fixture City official website']
+    assert 'Official website' in answer and 'send me the direct booking link' not in answer
+    if provider_link == URL:
+        assert '2:30 PM' in answer and len(state['calls']) == 2
+    else:
+        assert '(919) 555-0101' in answer and len(state['calls']) == 1
+        assert '2:30 PM' not in answer
+        assert ('Allow another.example' in answer) is bool(provider_link)
