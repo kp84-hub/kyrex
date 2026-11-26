@@ -176,3 +176,58 @@ def test_real_approved_click_cannot_post_to_an_unreviewed_endpoint(browser):
     spec,_=prepare(browser)
     result=driver.run(live,proto,spec,allowlist=['restaurant.example'],root=live.session_dir)
     assert result['outcome']=='unknown' and not state['posts']
+
+
+def availability_spec():
+    return {'id': 'a' * 32, 'nonce': 'b' * 64, 'stage': schema.AVAILABILITY,
+            'url': URL, 'steps': [], 'details': {'service': 'Gel manicure', 'date': '2030-06-14'}}
+
+
+@pytest.mark.parametrize('extra', [
+    {'stage': 'submit'}, {'submit': {}}, {'steps': [{'op': 'click'}]},
+    {'details': {'service': 'Gel manicure', 'date': '2030-06-14', 'email': 'fixture@example.com'}},
+    {'url': 'http://restaurant.example/book'},
+])
+def test_availability_wire_cannot_carry_a_submission_or_contact_details(extra):
+    with pytest.raises(ValueError):
+        schema.task({**availability_spec(), **extra})
+
+
+def test_availability_selects_filters_reads_enabled_slots_and_blocks_updates(browser):
+    live, state, proto = browser
+    state['form'] = """<!doctype html><h1>Example Salon</h1>
+        <label>Service<select id="service"><option value="">Choose</option>
+            <option value="gel">Gel manicure</option><option value="basic">Basic manicure</option>
+        </select></label>
+        <form action="/confirm" method="post">
+          <label>Date<input id="date" type="date"></label>
+          <button type="submit">Confirm booking</button>
+        </form>
+        <label>Available times<select id="times"><option value="old">8:00 AM</option></select></label>
+        <script>
+        document.querySelector('#date').addEventListener('change', () => {
+          if (document.querySelector('#service').value !== 'gel' ||
+              document.querySelector('#date').value !== '2030-06-14') return;
+          fetch('/save', {method:'POST', body:'preference=gel'}).catch(() => {});
+          document.querySelector('#times').innerHTML =
+            '<option value="">Choose</option><option value="10:00">10:00 AM</option>' +
+            '<option disabled value="11:00">11:00 AM</option><option value="14:30">2:30 PM</option>';
+        });
+        </script>"""
+    result = driver.run(live, proto, availability_spec(), allowlist=['restaurant.example'],
+                        root=live.session_dir)
+    assert result['availability'] == {
+        'service': 'Gel manicure', 'date': '2030-06-14', 'times': ['10:00 AM', '2:30 PM']}
+    assert not state['posts']
+
+
+def test_availability_does_not_report_old_slots_when_service_or_date_changes(browser):
+    live, state, proto = browser
+    state['form'] = """<!doctype html>
+        <label>Service<select id="service"><option value="">Choose</option>
+            <option value="gel">Gel manicure</option></select></label>
+        <label>Date<input id="date" type="date"></label>
+        <label>Available times<select id="times"><option value="old">8:00 AM</option></select></label>"""
+    result = driver.run(live, proto, availability_spec(), allowlist=['restaurant.example'],
+                        root=live.session_dir)
+    assert result['availability']['times'] == []

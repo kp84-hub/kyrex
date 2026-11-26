@@ -2753,16 +2753,20 @@ def _bot_roster_lines(user: str) -> list[str]:
     return lines
 
 
-def current_time_context(user: str) -> str:
+def _user_now(user: str) -> datetime:
     account = account_store.get(user) if account_store.isolated(user) else None
     zone_name = (account or {}).get('profile', {}).get('timezone') or cal_writer.TIMEZONE
     try:
         zone = ZoneInfo(zone_name)
     except (TypeError, ValueError, ZoneInfoNotFoundError):
         zone = ZoneInfo(cal_writer.TIMEZONE)
-    now = datetime.now(zone)
+    return datetime.now(zone)
+
+
+def current_time_context(user: str) -> str:
+    now = _user_now(user)
     return (
-        f"Kyrex server clock for this turn: {now:%A, %B %-d, %Y at %-I:%M %p %Z} ({zone.key}). "
+        f"Kyrex server clock for this turn: {now:%A, %B %-d, %Y at %-I:%M %p %Z} ({now.tzinfo.key}). "
         "Resolve today, tomorrow and the current weekday from this clock. "
         "Use an explicitly requested timezone or an established venue timezone for its own dates and times. "
         "Dates in older messages describe those exchanges."
@@ -3097,6 +3101,11 @@ def build_coordinator_context(owner: str, coordinator_bot: dict) -> str:
         "diagnostics in the main answer unless asked. This does not hide "
         "meaningful failures or uncertainty about the requested facts. If no "
         "URL was supplied, say the source link is unavailable; never invent one.\n\n"
+        "Business hours never verify appointment openings. Report live times only if the "
+        "booking page showed them for the requested service and date. If the browser can "
+        "only read the business site, ask for the direct booking link and exact service when needed. "
+        "Prefer the official business source for its contact details if directories disagree. "
+        "\n\n"
         "Format local event results for quick reading on a phone. Start with "
         "one short date/location line. Give each event a bold name on its own "
         "line, followed by a compact bullet list: Time, Location, Source "
@@ -5028,6 +5037,15 @@ async def stream_chat(
             yield frame
         return
     import booking_chat
+    if (not fitness_read_only and selected_bot and selected_bot.get('owner') == user
+            and serve.coordinator_granted(selected_bot)):
+        availability_messages = booking_chat.availability_request(user_content, conv, turn_assistant_identity)
+        if availability_messages:
+            async for frame in booking_chat.availability_stream(
+                    sys.modules[__name__], user, conv, user_content, availability_messages,
+                    request_id, cancel_event, workspace_id):
+                yield frame
+            return
     if booking_chat.action(user_content, conv) is not None:
         async for frame in booking_chat.stream(user, conv, user_content, request_id, cancel_event, workspace_id):
             yield frame
