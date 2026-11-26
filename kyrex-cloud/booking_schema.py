@@ -1,5 +1,6 @@
 """Shared bounded booking wire schema. Data never supplies approval authority."""
 import hashlib
+import ipaddress
 import json
 import re
 from datetime import date, datetime
@@ -12,6 +13,26 @@ FORM_FIELDS = FIELDS + ('first_name','last_name')
 PREPARE_LABEL = re.compile(r'^(?:search|find(?: a)?(?: table| time)?|check availability|show (?:times|availability)|availability|select (?:date|time|party size)|choose (?:date|time)|next month|previous month|[0-9]{1,2}|[0-9]{1,2}:[0-9]{2}(?:\s*[ap]m)?)$', re.I)
 COMMIT_LABEL = re.compile(r'\b(?:book|reserve|reservation|confirm|complete|submit|request appointment)\b', re.I)
 FORBIDDEN = re.compile(r'\b(?:pay|payment|purchase|checkout|credit card|card number|cancellation fee|non-refundable|deposit|delete|password|sign in|log in|captcha|verify you are human)\b', re.I)
+
+
+def public_booking_link(value):
+    """Screen public URLs at both the Chat and Browser Host boundaries."""
+    if not isinstance(value, str) or len(value) > 2048 or re.search(r'[\s\x00-\x1f<>\\]', value):
+        return False
+    try:
+        parsed = urlsplit(value)
+        host = parsed.hostname or ''
+        try:
+            ipaddress.ip_address(host)
+            return False
+        except ValueError:
+            pass
+        return bool(parsed.scheme == 'https' and re.fullmatch(r'(?:[a-z\d-]+\.)+[a-z]{2,}', host)
+                    and not host.endswith(('.local', '.internal', '.localhost', '.localdomain', '.test', '.home.arpa'))
+                    and not (parsed.username or parsed.password or parsed.fragment)
+                    and parsed.port in (None, 443))
+    except ValueError:
+        return False
 
 
 def availability_time(value):
@@ -79,13 +100,15 @@ def task(value):
         wanted = value.get('details')
         if (set(value) != {'id', 'nonce', 'stage', 'url', 'details', 'steps'}
                 or value['steps'] != [] or not isinstance(wanted, dict)
-                or set(wanted) != {'service', 'date'} or parsed.scheme != 'https'
-                or parsed.port not in (None, 443) or parsed.fragment
-                or re.search(r'[\s\x00-\x1f<>\\]', value['url'])
-                or not clean(wanted['service'], 120)
-                or not details({'date': wanted['date']}).get('date')):
-            raise ValueError('Availability requires a secure booking link, service and date.')
-        return value
+                or not public_booking_link(value['url'])):
+            raise ValueError('Availability requires a secure website and no arbitrary steps.')
+        if set(wanted) == {'venue', 'location'}:
+            if all(clean(wanted[key], 120) for key in ('venue', 'location')):
+                return value
+        if set(wanted) == {'service', 'date'}:
+            if clean(wanted['service'], 120) and details({'date': wanted['date']}).get('date'):
+                return value
+        raise ValueError('Availability requires a venue and locality or an exact service and date.')
     details(value.get('details', {}))
     steps = value.get('steps')
     if not isinstance(steps, list) or len(steps) > 20: raise ValueError('Booking preparation exceeded its step limit.')

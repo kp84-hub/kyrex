@@ -177,6 +177,60 @@ def _available_times(current, frame):
     return result[:30]
 
 
+SERVICE_SELECTOR = re.compile(r'(?:select |choose )?(?:appointment )?service(?: type)?', re.I)
+BOOKING_LINK = re.compile(r'(?:book online|book now|book (?:an )?appointment|schedule (?:an )?appointment|appointments)', re.I)
+CONTACT_LINK = re.compile(r'contact(?: us)?', re.I)
+NON_BOOKING_PATH = re.compile(r'/(?:viewphoto|photo|gallery|menu|contact)(?:[/.~-]|$)', re.I)
+
+
+def _phone(snapshot):
+    # Only return an unambiguous visible North American number or matching tel links.
+    links = [item['href'][4:] for item in snapshot['controls'] if item['href'].startswith('tel:')]
+    numbers = links or re.findall(r'(?:\+1[-. ]*)?(?:\(\d{3}\)|\b\d{3})[-. ]*\d{3}[-. ]+\d{4}\b', snapshot['text'])
+    digits = {re.sub(r'\D', '', number) for number in numbers}
+    digits = {number[1:] if len(number) == 11 and number.startswith('1') else number
+              for number in digits}
+    if len(digits) != 1:
+        return ''
+    number = digits.pop()
+    return f'({number[:3]}) {number[3:6]}-{number[6:]}' if len(number) == 10 else ''
+
+
+def _booking_links(snapshot):
+    return {item['href'] for item in snapshot['controls']
+            if BOOKING_LINK.fullmatch(' '.join(item['label'].split()))
+            and schema.public_booking_link(item['href'])
+            and not NON_BOOKING_PATH.search(unquote(urlsplit(item['href']).path))}
+
+
+def discover_availability(driver, current, wanted, same_site, observe, check_authority):
+    """Verify the business and report only links and contact visible on its site."""
+    if not schema.business_matches(current, wanted):
+        raise ValueError('I could not verify that business and city on the website.')
+    phone = _phone(current)
+    links = _booking_links(current)
+    if (any(c['tag'] == 'select' and SERVICE_SELECTOR.fullmatch(c['label']) for c in current['controls'])
+            and any(c['tag'] == 'input' and c['type'] == 'date' for c in current['controls'])):
+        links = {current['url']}
+    evidence_url = current['url']
+    if not links:
+        contacts = {c['href'] for c in current['controls'] if CONTACT_LINK.fullmatch(c['label'])
+                    and schema.public_booking_link(c['href']) and same_site(c['href'])
+                    and c['href'] != current['url']}
+        if len(contacts) == 1:
+            check_authority()
+            driver.navigate(contacts.pop())
+            contact = observe()
+            if schema.business_matches(contact, wanted):
+                evidence_url = contact['url']
+                phone = _phone(contact) or phone
+                links = _booking_links(contact)
+    check_authority()
+    return {'status': 'no_changes', 'mode': 'booking_browser',
+            'booking_discovery': {'url': evidence_url, 'phone': phone,
+                                  'booking_url': next(iter(links)) if len(links) == 1 else ''}}
+
+
 def run_availability(driver, proto, spec, allowed):
     """Select native filters in the public context and return observed slots."""
     url = spec['url']
@@ -185,7 +239,7 @@ def run_availability(driver, proto, spec, allowed):
     def same_site(target):
         try:
             parsed = urlsplit(target)
-            return (parsed.scheme == 'https' and parsed.hostname == source.hostname
+            return (parsed.scheme == 'https' and (parsed.hostname or '').removeprefix('www.') == (source.hostname or '').removeprefix('www.')
                     and parsed.port in (None, 443) and allowed(target))
         except ValueError:
             return False
@@ -220,10 +274,12 @@ def run_availability(driver, proto, spec, allowed):
     context.route('**/*', guard)
     driver.navigate(url)
     current = observe()
+    if 'venue' in spec['details']:
+        return discover_availability(driver, current, spec['details'], same_site, observe, check_authority)
 
     def service_control(current):
         return _availability_control(current, lambda item: item['tag'] == 'select'
-            and re.fullmatch(r'(?:select |choose )?(?:appointment )?service(?: type)?', item['label'], re.I))
+            and SERVICE_SELECTOR.fullmatch(item['label']))
 
     def date_control(current):
         return _availability_control(current, lambda item: item['tag'] == 'input' and item['type'] == 'date')
