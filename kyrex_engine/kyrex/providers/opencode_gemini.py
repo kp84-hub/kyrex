@@ -19,37 +19,64 @@ def requires_call_signature(model):
     return not re.match(r'gemini-(?:[12](?:[.-]|$)|pro(?:-vision)?$)', model, re.I)
 
 
+SAFE_ERROR_CODES = frozenset({
+    'inference_failed', 'server_error', 'invalid_request_error',
+    'authentication_error', 'permission_error', 'rate_limit_error',
+    'model_not_found', 'model_unavailable', 'INVALID_ARGUMENT', 'NOT_FOUND', 'PERMISSION_DENIED',
+    'UNAUTHENTICATED', 'RESOURCE_EXHAUSTED', 'UNAVAILABLE',
+    'OrgRequired', 'Forbidden', 'Unauthorized', 'NotFound', 'BadRequest',
+    'InvalidRequest', 'InvalidArgument', 'UnsupportedModel', 'ModelNotFound',
+    'ModelUnavailable', 'InferenceFailed', 'InferenceFailure', 'InferenceError',
+    'UpstreamError', 'ProviderUnavailable', 'TooManyRequests', 'RateLimitExceeded',
+    'BudgetExceeded', 'AccessDenied', 'InternalServerError',
+})
+REQUEST_ID_RE = re.compile(r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}')
+
+
 class GeminiHTTPError(RuntimeError):
-    def __init__(self, status_code, code=None):
+    def __init__(self, status_code, code=None, request_id=None):
         self.status_code = status_code
-        self.gemini_error_code = code
+        self.gemini_error_code = code if isinstance(code, str) and code in SAFE_ERROR_CODES else None
+        self.request_id = request_id if isinstance(request_id, str) and REQUEST_ID_RE.fullmatch(request_id) else None
         super().__init__('Gemini request failed')
 
 
-async def check_status(response):
+async def check_status(response, privacy=None):
     if not response.is_error:
         response.raise_for_status()
         return
-    # Never echo upstream messages: they can contain prompts or credentials.
-    # Read a bounded error document and retain only recognized machine codes.
+    # Retain only allowlisted machine codes and UUID request IDs. Provider
+    # messages/details, arbitrary tags, headers and prompts never leave here.
     raw = bytearray()
+    for_header = [response.headers.get(name) for name in
+                  ('x-request-id', 'x-opencode-request-id', 'request-id')]
+    candidates = []
     async for block in response.aiter_bytes():
         if len(raw) + len(block) > 16384:
             break
         raw.extend(block)
     code = None
     try:
-        error = json.loads(raw).get('error', {})
-        if isinstance(error, dict):
-            for value in (error.get('type'), error.get('code'), error.get('status')):
-                if value in ('inference_failed', 'INVALID_ARGUMENT', 'NOT_FOUND',
-                             'PERMISSION_DENIED', 'UNAUTHENTICATED',
-                             'RESOURCE_EXHAUSTED', 'UNAVAILABLE'):
-                    code = value
+        value = json.loads(raw)
+        if isinstance(value, dict):
+            error = value.get('error')
+            containers = [error, value] if isinstance(error, dict) else [value]
+            candidates.extend(container.get(field) for container in containers
+                              for field in ('request_id', 'requestId'))
+            for container in containers:
+                for field in ('_tag', 'type', 'code', 'status'):
+                    candidate = container.get(field)
+                    if isinstance(candidate, str) and candidate in SAFE_ERROR_CODES:
+                        code = candidate
+                        break
+                if code:
                     break
     except (ValueError, AttributeError, TypeError):
         pass
-    raise GeminiHTTPError(response.status_code, code)
+    request_id = next((candidate for candidate in [*for_header, *candidates]
+        if isinstance(candidate, str) and REQUEST_ID_RE.fullmatch(candidate)
+        and (privacy is None or privacy.text(candidate) == candidate)), None)
+    raise GeminiHTTPError(response.status_code, code, request_id)
 
 
 def endpoint(base_url: str, model: str, *, stream=True) -> str:
@@ -164,7 +191,9 @@ def payload(model, messages, tools, privacy):
                 calls[call['id']] = (function['name'], None)
         if parts:
             contents.append({'role': 'model' if role == 'assistant' else 'user', 'parts': parts})
-    body = {'contents': contents, 'generationConfig': {'maxOutputTokens': 32768}}
+    # Gemini's output default is model-specific. An unrequested, hardcoded
+    # cap makes even a minimal connection check differ from the native API.
+    body = {'contents': contents}
     if instructions:
         body['systemInstruction'] = {'parts': instructions}
     declarations = []
@@ -221,7 +250,7 @@ async def chat(provider, model, messages, tools, stream_callback,
         raise RuntimeError('Provider stream was interrupted')
     async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=15), follow_redirects=False) as client:
         async with client.stream('POST', url, headers=headers, json=body) as response:
-            await check_status(response)
+            await check_status(response, provider._privacy)
             async for event in events(response):
                 if interrupt_event is not None and interrupt_event.is_set():
                     raise RuntimeError('Provider stream was interrupted')
