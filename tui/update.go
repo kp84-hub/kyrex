@@ -183,6 +183,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.MouseMsg:
+		if m.confirmDetails != nil {
+			return m.updateEditApprovalDetails(msg)
+		}
 		m, cmd, handled := m.handleMouseMsg(msg)
 		if handled {
 			return m, cmd
@@ -191,6 +194,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.Width = msg.Width
 		m.Height = msg.Height
+		if m.confirmDetails != nil && m.Width > 0 && m.Height > 0 {
+			m.confirmDetails = m.layoutEditApprovalDetails(m.confirmDetails.YOffset)
+		}
 		if m.Width < 110 {
 			m.ShowSidebar = false
 		}

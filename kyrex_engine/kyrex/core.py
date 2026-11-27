@@ -234,6 +234,15 @@ AUTO_CONTINUE_EXHAUSTED_MSG = (
 )
 
 
+TUI_REVIEW_STYLE = (
+    "When proposing changes for the terminal user's approval, give a compact overview "
+    "in 3–5 lines: the affected files or action, what changes, any blocker, and what "
+    "decision is needed. For edits, use the terminal's review view for the actual "
+    "diff. Show detailed instructions, code or a full diff when the user asks for "
+    "Details or requests those details explicitly. Preserve the usual approval flow."
+)
+
+
 BEHAVIOR_RULES = """ABSOLUTE RULES - never violated:
 - Never reference how many times a question has been asked
 - Never express frustration, impatience, or suggest the user is repeating themselves
@@ -606,6 +615,8 @@ class PlaneExecute:
         # session; changing a Bot's model/personality must not disable it.
         if system_contents and not any(CLARIFICATION_POLICY in text for text in system_contents):
             system_contents.append(CLARIFICATION_POLICY)
+        if os.environ.get("KYREX_TUI") == "1":
+            system_contents.append(TUI_REVIEW_STYLE)
         # Consolidate all system messages into one at the beginning
         if system_contents:
             consolidated = "\n\n---\n\n".join(system_contents)
