@@ -197,7 +197,7 @@ func TestPendingApprovalRendersSingleCard(t *testing.T) {
 	if m.ConfirmID != "g1" {
 		t.Fatalf("ConfirmID = %q, want g1", m.ConfirmID)
 	}
-	if got := strings.Count(m.View(), "[!] CONFIRM CHANGES"); got != 1 {
+	if got := strings.Count(m.View(), "Review file change"); got != 1 {
 		t.Fatalf("expected exactly one approval card in viewport, got %d", got)
 	}
 
@@ -228,7 +228,7 @@ func TestSecondApprovalReplacesFirstLiveState(t *testing.T) {
 	if m.ConfirmID != "g2" {
 		t.Fatalf("live approval = %q, want g2 (replacement)", m.ConfirmID)
 	}
-	if got := strings.Count(m.View(), "[!] CONFIRM CHANGES"); got != 1 {
+	if got := strings.Count(m.View(), "Review file change"); got != 1 {
 		t.Fatalf("second approval appended a second card: got %d approval cards", got)
 	}
 

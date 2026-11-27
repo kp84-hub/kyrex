@@ -661,6 +661,7 @@ func (m Model) resolvePendingConfirmAsDenied() Model {
 	// text so they never conflate with explicit y/n approvals or rejections.
 	m = m.appendCollapsedApprovalLine("↷  Pending change to: " + m.ConfirmPath + " — dismissed, not applied")
 	m.Timeline.UpdateByID(m.ConfirmID, components.StatusWarning, "Dismissed (no decision) — "+m.ConfirmPath)
+	m.confirmDetails = nil
 	m.ConfirmID = ""
 	m.ConfirmPath = ""
 	m.ConfirmDiff = ""
@@ -834,6 +835,7 @@ func (m Model) handleConfirmRequest(msg MsgFromEngine) (Model, tea.Cmd, bool) {
 		}
 		m.Timeline.UpdateByID(m.ConfirmID, components.StatusWarning, "Dismissed (superseded) — "+m.ConfirmPath)
 	}
+	m.confirmDetails = nil
 	m.ConfirmID = newID
 	m.ConfirmPath = msg.Path
 	m.ConfirmDiff = msg.Diff

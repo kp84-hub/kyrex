@@ -820,3 +820,20 @@ def test_shared_clarification_policy_refreshes_older_engine_sessions(engine):
     system = engine._build_api_messages()[0]['content']
     assert 'Older Bot personality' in system
     assert CLARIFICATION_POLICY in system
+
+
+def test_tui_review_style_applies_to_resumed_sessions_only_on_tui(engine, monkeypatch):
+    from kyrex.core import TUI_REVIEW_STYLE
+
+    engine.session.history = [
+        {"role": "system", "content": "Existing session rules."},
+        {"role": "user", "content": "Show the change for approval."},
+    ]
+    monkeypatch.setenv("KYREX_TUI", "1")
+    for _ in range(2):
+        system = engine._build_api_messages()[0]["content"]
+        assert system.count(TUI_REVIEW_STYLE) == 1
+        assert "Existing session rules." in system
+
+    monkeypatch.delenv("KYREX_TUI")
+    assert TUI_REVIEW_STYLE not in engine._build_api_messages()[0]["content"]

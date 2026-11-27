@@ -911,6 +911,19 @@ func (m Model) handleConfirmKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 	case "n", "N":
 		m = m.rejectConfirm()
 		return m, nil, true
+	case "d", "D":
+		if m.isEditApproval() && m.Width > 0 && m.Height > 0 {
+			if m.confirmDetails == nil {
+				m.confirmDetails = m.layoutEditApprovalDetails(0)
+			} else {
+				m.confirmDetails = nil
+			}
+			return m, nil, true
+		}
+	}
+	if m.confirmDetails != nil {
+		m, cmd := m.updateEditApprovalDetails(msg)
+		return m, cmd, true
 	}
 	return m, nil, false
 }
@@ -1919,6 +1932,7 @@ func (m Model) sendConfirmResponse(approved bool) Model {
 
 // clearConfirmState consumes the live approval state after a decision.
 func (m Model) clearConfirmState() Model {
+	m.confirmDetails = nil
 	m.ConfirmID = ""
 	m.ConfirmPath = ""
 	m.ConfirmDiff = ""

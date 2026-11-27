@@ -382,7 +382,9 @@ type Model struct {
 	SweepBaseline map[string]bool
 	SweepWarned   bool
 	SweepChanges  []rift.Change
-	ConfirmType   string // "" = edit (side-by-side diff), "deletion" = single-box proposal
+	ConfirmType   string // distinguishes file edits, deletion, and other approval types
+
+	confirmDetails *viewport.Model
 	// Clone-relative paths the live gate already resolved. Destination bytes,
 	// rather than this historical flag, decide what still needs merging.
 	_handledChanges map[string]bool

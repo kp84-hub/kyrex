@@ -712,6 +712,9 @@ func (m Model) View() string {
 	if m.Width == 0 || m.Height == 0 {
 		return "Initializing Kyrex..."
 	}
+	if m.isEditApproval() {
+		return m.renderEditApproval()
+	}
 
 	// ── Full-screen landing page when no conversation history exists ──
 	// Covers the entire terminal (no sidebar, no viewport, no footer chrome).
