@@ -221,21 +221,31 @@ def test_voice_style_reaches_provider_only_for_the_voice_turn():
         assert chat_service.VOICE_REPLY_CONTEXT not in provider.messages[0]['content']
 
 
-def test_voice_style_is_cleared_on_the_next_turn_of_a_reused_engine(monkeypatch, tmp_path):
-    workspace = tmp_path / 'voice-workspace'; workspace.mkdir()
-    monkeypatch.setenv('KYREX_CHAT_WORKSPACE', str(workspace))
+@pytest.mark.parametrize('coordinator', [False, True])
+def test_voice_context_is_cleared_on_the_next_turn_of_a_reused_engine(monkeypatch, tmp_path, coordinator):
     _StubSession.instances.clear()
-    conv = chat_service.create_conversation('alice')
+    if coordinator:
+        _bot('chief', owner='alice', policy=chat_service.serve.COORDINATOR_PRESET)
+        conv = chat_service.create_conversation('alice', bot_id='chief')
+        voice_kwargs = {}
+    else:
+        workspace = tmp_path / 'voice-workspace'
+        workspace.mkdir()
+        monkeypatch.setenv('KYREX_CHAT_WORKSPACE', str(workspace))
+        conv = chat_service.create_conversation('alice')
+        voice_kwargs = {'workspace_id': 'default'}
     with patch.object(chat_service, 'EngineSession', _StubSession):
         frames = asyncio.run(_frames(chat_service.stream_chat(
-            'alice', conv['conversation_id'], 'Explain the result', workspace_id='default', voice_reply=True)))
+            'alice', conv['conversation_id'], 'Can you hear me?', voice_reply=True, **voice_kwargs)))
         assert _terminal(frames)['status'] == 'complete'
         frames = asyncio.run(_frames(chat_service.stream_chat(
             'alice', conv['conversation_id'], 'Show the details')))
         assert _terminal(frames)['status'] == 'complete'
     assert len(_StubSession.instances) == 1
     first, second = _StubSession.instances[0].turns
-    assert chat_service.VOICE_REPLY_CONTEXT in first
+    assert 'The user spoke this message to Kyrex Voice' in first
+    assert 'You receive the transcript of their speech as text' in first
+    assert 'confirm that their spoken words came through' in first
     assert chat_service.VOICE_REPLY_CONTEXT not in second
 
 
